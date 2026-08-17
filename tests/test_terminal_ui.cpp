@@ -181,91 +181,86 @@ static void TestColumns() {
     Check(leftAligned, "RenderColumns never exceeds the sum of column widths plus gap");
 }
 
-// ─── 3. The supplied Vampire artwork ────────────────────────────────────────
+// ─── 3. The Dracula bat mark ────────────────────────────────────────────────
 
-static void TestVampireArt() {
-    Section("Layout 5: supplied Vampire Dracula artwork");
+static void TestBatArt() {
+    Section("Layout 5: the Dracula bat mark");
 
-    const auto& art = Art::Vampire();
-    Check(art.size() == 16, "Vampire artwork has its original 16 rows");
-    Check(Art::MaxWidth(art) == 52, "Vampire artwork measures 52 display cells wide");
+    const auto& art = Art::Bat();
+    Check(art.size() == 3, "The bat mark is three rows tall - it never dominates the screen");
+    Check(Art::MaxWidth(art) == 15, "The bat mark measures 15 display cells wide");
 
     bool uniform = true;
     for (const auto& row : art) {
-        if (Text::VisibleWidth(row) != 52) uniform = false;
+        if (Text::VisibleWidth(row) != 15) uniform = false;
     }
-    Check(uniform, "Every artwork row is exactly 52 cells (no ragged edge)");
+    Check(uniform, "Every bat row is exactly 15 cells (no ragged edge)");
+
+    bool pureAscii = true;
+    for (const auto& row : art) {
+        for (unsigned char c : row) if (c > 126 || c < 32) pureAscii = false;
+    }
+    Check(pureAscii, "The bat mark is pure ASCII, so --no-unicode renders it unchanged");
 
     auto colored = Art::Colorize(art);
     bool widthsPreserved = colored.size() == art.size();
     for (size_t i = 0; i < colored.size() && widthsPreserved; ++i) {
         if (Text::VisibleWidth(colored[i]) != Text::VisibleWidth(art[i])) widthsPreserved = false;
     }
-    Check(widthsPreserved, "Colorizing the artwork does not alter its measured width");
+    Check(widthsPreserved, "Colorizing the mark does not alter its measured width");
 
     Terminal::SetColorEnabled(false);
     auto plain = Art::Colorize(art);
     bool plainOk = (plain == art);
     Terminal::SetColorEnabled(true);
-    Check(plainOk, "With --no-color the artwork renders unmodified");
-
-    const auto& compact = Art::VampireCompact();
-    Check(!compact.empty() && Art::MaxWidth(compact) <= 30,
-          "Compact ASCII mark stays within 30 cells for narrow terminals");
-    bool compactAscii = true;
-    for (const auto& row : compact) {
-        for (unsigned char c : row) if (c > 126) compactAscii = false;
-    }
-    Check(compactAscii, "Compact mark is pure ASCII and needs no Unicode support");
+    Check(plainOk, "With --no-color the mark renders unmodified");
 }
 
-// ─── 4. Responsive startup card ─────────────────────────────────────────────
+// ─── 4. Responsive header ───────────────────────────────────────────────────
 
-static void TestStartupLayoutSelection() {
-    Section("Layout 6: responsive layout thresholds");
+static void TestHeaderVariantSelection() {
+    Section("Layout 6: responsive header thresholds");
 
-    Check(StartupCard::SelectLayout(40)  == StartupLayout::Minimal, "40 columns selects the minimal layout");
-    Check(StartupCard::SelectLayout(43)  == StartupLayout::Minimal, "43 columns still selects the minimal layout");
-    Check(StartupCard::SelectLayout(44)  == StartupLayout::Compact, "44 columns selects the compact layout");
-    Check(StartupCard::SelectLayout(50)  == StartupLayout::Compact, "50 columns selects the compact layout");
-    Check(StartupCard::SelectLayout(61)  == StartupLayout::Compact, "61 columns selects the compact layout");
-    Check(StartupCard::SelectLayout(62)  == StartupLayout::Stacked, "62 columns switches to the stacked layout");
-    Check(StartupCard::SelectLayout(80)  == StartupLayout::Stacked, "80 columns uses the stacked layout");
-    Check(StartupCard::SelectLayout(99)  == StartupLayout::Stacked, "99 columns uses the stacked layout");
-    Check(StartupCard::SelectLayout(100) == StartupLayout::Large,   "100 columns switches to the two-column layout");
-    Check(StartupCard::SelectLayout(200) == StartupLayout::Large,   "200 columns uses the two-column layout");
+    Check(StartupCard::SelectVariant(24) == HeaderVariant::Minimal,  "24 columns selects the minimal header");
+    Check(StartupCard::SelectVariant(29) == HeaderVariant::Minimal,  "29 columns still selects the minimal header");
+    Check(StartupCard::SelectVariant(30) == HeaderVariant::Compact,  "30 columns selects the compact header");
+    Check(StartupCard::SelectVariant(43) == HeaderVariant::Compact,  "43 columns selects the compact header");
+    Check(StartupCard::SelectVariant(44) == HeaderVariant::Standard, "44 columns fits the bat beside the identity");
+    Check(StartupCard::SelectVariant(80) == HeaderVariant::Standard, "80 columns uses the standard header");
+    Check(StartupCard::SelectVariant(200) == HeaderVariant::Standard, "200 columns uses the same standard header");
 
-    // Without Unicode the Braille artwork is unavailable, so the card drops to
-    // the ASCII mark rather than mixing ASCII frames with Unicode art.
+    // The bat mark is ASCII, so the header never has to change shape just
+    // because the terminal cannot render Unicode.
     Terminal::SetUnicodeEnabled(false);
-    Check(StartupCard::SelectLayout(200) == StartupLayout::Compact,
-          "Without Unicode support even a wide terminal uses the ASCII compact layout");
-    Check(StartupCard::SelectLayout(30) == StartupLayout::Minimal,
-          "Without Unicode support a narrow terminal still falls back to minimal");
+    Check(StartupCard::SelectVariant(120) == HeaderVariant::Standard,
+          "Without Unicode support a wide terminal still uses the standard header");
     Terminal::SetUnicodeEnabled(true);
 }
 
-static void TestStartupCardGeometry() {
-    Section("Layout 7: startup card geometry at every tested width");
+static void TestHeaderGeometry() {
+    Section("Layout 7: header geometry at every tested width");
 
     StartupInfo info = StartupInfo::Detect();
     info.workingDirectory = "D:\\Coding\\python\\AI\\jew\\build\\some\\deeply\\nested\\path";
 
-    bool cardsUniform = true;
     bool nothingOverflows = true;
     bool noEmbeddedNewlines = true;
+    bool dividerFullBleed = true;
+    bool heightsFixed = true;
 
     for (int width : kTestWidths) {
-        auto card = StartupCard::RenderCard(width, info);
-        if (card.empty()) { cardsUniform = false; continue; }
+        auto header = StartupCard::RenderHeader(width, info);
+        if (header.empty()) { heightsFixed = false; continue; }
 
-        if (StartupCard::SelectLayout(width) != StartupLayout::Minimal) {
-            const size_t expected = Text::VisibleWidth(card.front());
-            for (const auto& row : card) {
-                if (Text::VisibleWidth(row) != expected) cardsUniform = false;
-            }
-            if (expected != static_cast<size_t>(StartupCard::CardWidth(width))) cardsUniform = false;
+        // The header closes on a divider that spans the usable width exactly.
+        if (Text::VisibleWidth(header.back()) != static_cast<size_t>(width - 1)) {
+            dividerFullBleed = false;
         }
+
+        // Height depends only on the variant, never on the content.
+        const size_t expected =
+            StartupCard::SelectVariant(width) == HeaderVariant::Standard ? 5 : 4;
+        if (header.size() != expected) heightsFixed = false;
 
         for (const auto& row : StartupCard::Render(width, info)) {
             // Strictly narrower than the terminal: writing into the final cell
@@ -275,47 +270,46 @@ static void TestStartupCardGeometry() {
         }
     }
 
-    Check(cardsUniform, "Every card row has identical width - no misplaced right border");
     Check(nothingOverflows, "No rendered row reaches the final terminal column at any tested width");
     Check(noEmbeddedNewlines, "No rendered row contains an embedded newline");
+    Check(dividerFullBleed, "The header divider spans the full usable width at every tested width");
+    Check(heightsFixed, "Header height is a function of the variant alone");
 
-    // The artwork must survive intact in the layouts that claim to show it.
-    auto large = StartupCard::RenderCard(160, info);
-    bool artIntact = false;
-    for (const auto& row : large) {
-        if (row.find(Art::Vampire()[7]) != std::string::npos) artIntact = true;
+    // The bat is present, unmodified, in the standard header.
+    auto wide = StartupCard::RenderHeader(160, info);
+    bool batIntact = false;
+    for (const auto& row : wide) {
+        if (row.find(Art::Bat()[1]) != std::string::npos) batIntact = true;
     }
-    Check(artIntact, "The widest artwork row is present unmodified in the two-column layout");
+    Check(batIntact, "The bat mark appears unmodified in the standard header");
 
-    auto stacked = StartupCard::RenderCard(80, info);
-    bool stackedArt = false;
-    for (const auto& row : stacked) {
-        if (row.find(Art::Vampire()[7]) != std::string::npos) stackedArt = true;
-    }
-    Check(stackedArt, "The full artwork is present in the stacked layout");
+    // Same header, same height, in a narrow window and a wide one.
+    Check(StartupCard::RenderHeader(80, info).size() ==
+          StartupCard::RenderHeader(200, info).size(),
+          "A windowed and a fullscreen terminal produce a header of identical height");
 
-    auto minimal = StartupCard::RenderCard(40, info);
-    bool minimalSmall = minimal.size() <= 3;
+    auto minimal = StartupCard::RenderHeader(28, info);
+    bool minimalSmall = minimal.size() == 2;
     for (const auto& row : minimal) {
-        if (Text::VisibleWidth(row) > 40) minimalSmall = false;
+        if (Text::VisibleWidth(row) > 27) minimalSmall = false;
     }
-    Check(minimalSmall, "The 40-column fallback is three short lines and never breaks the screen");
+    Check(minimalSmall, "The 28-column fallback is two short rows and never breaks the screen");
 
     // No-colour and ASCII modes keep the same geometry.
     Terminal::SetColorEnabled(false);
     Terminal::SetUnicodeEnabled(false);
     bool asciiUniform = true;
     for (int width : kTestWidths) {
-        auto card = StartupCard::RenderCard(width, info);
-        if (card.empty() || StartupCard::SelectLayout(width) == StartupLayout::Minimal) continue;
-        const size_t expected = Text::VisibleWidth(card.front());
-        for (const auto& row : card) {
-            if (Text::VisibleWidth(row) != expected) asciiUniform = false;
+        auto header = StartupCard::RenderHeader(width, info);
+        if (header.empty()) { asciiUniform = false; continue; }
+        if (Text::VisibleWidth(header.back()) != static_cast<size_t>(width - 1)) asciiUniform = false;
+        for (const auto& row : header) {
+            if (Text::VisibleWidth(row) > static_cast<size_t>(width - 1)) asciiUniform = false;
         }
     }
     Terminal::SetColorEnabled(true);
     Terminal::SetUnicodeEnabled(true);
-    Check(asciiUniform, "Startup card geometry holds in --no-color --no-unicode mode");
+    Check(asciiUniform, "Header geometry holds in --no-color --no-unicode mode");
 }
 
 // ─── 5. Command palette ─────────────────────────────────────────────────────
@@ -696,14 +690,18 @@ static void TestScreenRegionMatrix() {
     bool outputUsable = true;
     bool paletteFits = true;
     bool headerInsideScreen = true;
+    bool bottomChromeIntact = true;
 
     for (int w : {60, 80, 100, 120, 160}) {
         for (int h : kTestHeights) {
             for (int suggestions : {0, 5, 23}) {
                 const auto L = ScreenModel::Compute(w, h, suggestions, info);
 
-                // 1. The prompt is always the last row of the screen.
-                if (L.input.top != h - 1 || L.input.height != 1) promptAlwaysVisible = false;
+                // 1. The prompt strip is always on screen, one row above the
+                //    footer, which owns the last row.
+                if (L.footer.height != 1 || L.footer.top != h - 1) bottomChromeIntact = false;
+                if (L.input.top != h - 2 || L.input.height != 1) promptAlwaysVisible = false;
+                if (L.inputRule.height != 1 || L.inputRule.top != h - 3) bottomChromeIntact = false;
 
                 // 2. No region may have a negative or wrapped-around size.
                 if (L.header.height < 0 || L.output.height < 0 ||
@@ -713,7 +711,9 @@ static void TestScreenRegionMatrix() {
                 // 3. Regions must tile the screen without overlapping.
                 if (L.header.Bottom() > L.output.top) noOverlap = false;
                 if (L.output.Bottom() > L.palette.top) noOverlap = false;
-                if (L.palette.Bottom() > L.input.top) noOverlap = false;
+                if (L.palette.Bottom() > L.inputRule.top) noOverlap = false;
+                if (L.inputRule.Bottom() > L.input.top) noOverlap = false;
+                if (L.input.Bottom() > L.footer.top) noOverlap = false;
                 if (L.header.top != 0) headerInsideScreen = false;
                 if (L.header.Bottom() > h) headerInsideScreen = false;
 
@@ -724,25 +724,39 @@ static void TestScreenRegionMatrix() {
         }
     }
 
-    Check(promptAlwaysVisible, "The prompt occupies the last row at every width and height");
+    Check(promptAlwaysVisible, "The prompt occupies its own strip at every width and height");
+    Check(bottomChromeIntact, "Divider, prompt and footer own the last three rows everywhere");
     Check(noNegative, "No region is ever assigned a negative height");
     Check(outputUsable, "The output region always keeps at least one row");
-    Check(noOverlap, "Header, output, palette and input never overlap");
+    Check(noOverlap, "Header, output, palette, divider, input and footer never overlap");
     Check(headerInsideScreen, "The header always starts at row 0 and stays on screen");
     Check(paletteFits, "Opening the palette never starves the output below its minimum");
 }
 
 static void TestHeightResponsiveHeader() {
-    Section("Screen 2: height-responsive header selection");
+    Section("Screen 2: consistent header from windowed to fullscreen");
 
     StartupInfo info = StartupInfo::Detect();
 
-    // A tall terminal keeps the approved full card, artwork and tips included.
+    // The central requirement: a normal window and a fullscreen terminal must
+    // produce the SAME header, so the two experiences look alike.
+    bool sameEverywhere = true;
+    int headerRows = -1;
+    for (int h : {20, 24, 25, 30, 40, 50, 60, 80}) {
+        const auto L = ScreenModel::Compute(120, h, 0, info);
+        if (L.headerVariant != HeaderVariant::Standard) sameEverywhere = false;
+        if (headerRows >= 0 && L.header.height != headerRows) sameEverywhere = false;
+        headerRows = L.header.height;
+    }
+    Check(sameEverywhere,
+          "From 20 to 80 rows the header is the same standard bat header of the same height");
+    Check(headerRows == 5, "The standard header claims exactly five rows");
+
     const auto tall = ScreenModel::Compute(120, 50, 0, info);
-    Check(tall.headerVariant == HeaderVariant::Full,
-          "A tall terminal shows the full Vampire card with tips");
     Check(tall.output.height >= ScreenModel::kPreferredOutputRows,
-          "A tall terminal still gives the output its preferred height");
+          "A tall terminal gives the output its preferred height");
+    Check(tall.output.height > tall.header.height * 3,
+          "In fullscreen the output region, not the header, dominates the screen");
 
     // A normal, non-maximized window must still show useful output.
     bool normalWindowsUsable = true;
@@ -750,24 +764,18 @@ static void TestHeightResponsiveHeader() {
         const auto L = ScreenModel::Compute(120, h, 0, info);
         if (L.output.height < ScreenModel::kPreferredOutputRows) normalWindowsUsable = false;
         if (!L.hasHeader) normalWindowsUsable = false;
+        if (L.output.height <= L.header.height) normalWindowsUsable = false;
     }
     Check(normalWindowsUsable,
-          "At 24, 25 and 30 rows the header shrinks so the output keeps 8+ rows");
-
-    // The header degrades rather than the output.
-    const auto medium = ScreenModel::Compute(120, 30, 0, info);
-    Check(medium.headerVariant != HeaderVariant::Full,
-          "A 30-row terminal degrades the header instead of the output viewport");
-    Check(medium.hasHeader, "A 30-row terminal still shows a Dracula header");
+          "At 24, 25 and 30 rows the output keeps 8+ rows and still outweighs the header");
 
     // Monotonicity: the header never gets richer as the terminal gets shorter.
     auto rank = [](HeaderVariant v) {
         switch (v) {
-            case HeaderVariant::Full:       return 4;
-            case HeaderVariant::FullNoTips: return 3;
-            case HeaderVariant::Compact:    return 2;
-            case HeaderVariant::Minimal:    return 1;
-            default:                        return 0;
+            case HeaderVariant::Standard: return 3;
+            case HeaderVariant::Compact:  return 2;
+            case HeaderVariant::Minimal:  return 1;
+            default:                      return 0;
         }
     };
     bool monotonic = true;
@@ -783,15 +791,22 @@ static void TestHeightResponsiveHeader() {
     bool shortSafe = true;
     for (int h : {3, 5, 8, 10, 12, 15}) {
         const auto L = ScreenModel::Compute(80, h, 0, info);
-        if (L.input.top != h - 1) shortSafe = false;
+        if (L.input.height != 1) shortSafe = false;
+        if (L.input.top < 0 || L.input.top > h - 1) shortSafe = false;
         if (L.output.height < 1) shortSafe = false;
         if (L.header.Bottom() > L.output.top) shortSafe = false;
+        if (L.output.Bottom() > L.inputRule.top) shortSafe = false;
     }
     Check(shortSafe, "Terminals down to 3 rows keep a prompt and at least one output row");
 
-    // Growing the terminal restores the full artwork automatically.
-    Check(rank(ScreenModel::Compute(120, 60, 0, info).headerVariant) == 4,
-          "Enlarging the terminal restores the full Vampire header");
+    // Growing the terminal keeps the header identical and grows the output.
+    const auto windowed = ScreenModel::Compute(120, 30, 0, info);
+    const auto fullscreen = ScreenModel::Compute(120, 60, 0, info);
+    Check(windowed.header.height == fullscreen.header.height &&
+          windowed.headerVariant == fullscreen.headerVariant,
+          "Going fullscreen changes the output height only, never the header");
+    Check(fullscreen.output.height > windowed.output.height,
+          "The extra fullscreen rows all go to the output region");
 }
 
 static void TestPaletteResponsiveHeight() {
@@ -830,6 +845,83 @@ static void TestPaletteResponsiveHeight() {
     Check(rows.size() == 4, "A 3-row palette viewport renders 3 items plus the footer");
     Check(rows.back().find("browse") != std::string::npos,
           "A truncated palette tells the user the list scrolls");
+}
+
+static void TestPaintedFrameStructure() {
+    Section("Screen 3b: the painted frame has clean, aligned regions");
+
+    const std::string prompt = Terminal::DraculaPrompt();
+
+    auto describe = [&](int w, int h) {
+        InteractiveScreen screen;
+        screen.SetStatusLine("sample: test_sample.exe");
+        for (int i = 0; i < 40; ++i) {
+            screen.Output().AppendLine("output line " + std::to_string(i));
+        }
+        LineEditor editor;
+        editor.ResetBuffer();
+        auto frame = screen.PreviewFrame(w, h, editor, prompt);
+        return std::make_pair(frame, screen.Layout());
+    };
+
+    bool structureHolds = true;
+    bool dividersAligned = true;
+    bool nothingReachesLastColumn = true;
+    bool outputDominates = true;
+
+    for (auto [w, h] : std::vector<std::pair<int, int>>{{80, 24}, {100, 30}, {120, 30},
+                                                        {160, 50}, {200, 60}, {240, 67}}) {
+        auto [frame, L] = describe(w, h);
+
+        if (static_cast<int>(frame.size()) != h) structureHolds = false;
+
+        // Header: blank row, three bat rows, divider.
+        if (L.headerVariant != HeaderVariant::Standard) structureHolds = false;
+        if (Text::StripAnsi(frame[1]).find("/\\") == std::string::npos) structureHolds = false;
+        if (Text::StripAnsi(frame[1]).find("Dracula") == std::string::npos) structureHolds = false;
+
+        // Two dividers, identical width, one closing the header and one above
+        // the prompt: that is the structural separation the layout promises.
+        const size_t headerRule = Text::VisibleWidth(frame[L.header.Bottom() - 1]);
+        const size_t inputRule  = Text::VisibleWidth(frame[L.inputRule.top]);
+        if (headerRule != static_cast<size_t>(w - 1)) dividersAligned = false;
+        if (inputRule != headerRule) dividersAligned = false;
+
+        // The prompt is in its own strip, the footer carries the status.
+        if (Text::StripAnsi(frame[L.input.top]).find(Terminal::PromptGlyph()) ==
+            std::string::npos) structureHolds = false;
+        if (Text::StripAnsi(frame[L.footer.top]).find("test_sample.exe") ==
+            std::string::npos) structureHolds = false;
+
+        // Output content lives between the two dividers.
+        if (Text::StripAnsi(frame[L.output.top]).find("output line") ==
+            std::string::npos) structureHolds = false;
+
+        if (L.output.height < L.header.height * 2) outputDominates = false;
+
+        for (const auto& row : frame) {
+            if (Text::VisibleWidth(row) >= static_cast<size_t>(w)) {
+                nothingReachesLastColumn = false;
+            }
+        }
+    }
+
+    Check(structureHolds, "Header, output, prompt strip and footer are painted where the model says");
+    Check(dividersAligned, "Both dividers span exactly the usable width, at every geometry");
+    Check(nothingReachesLastColumn, "No painted row reaches the terminal's final column");
+    Check(outputDominates, "The output region is at least twice the header in every geometry");
+
+    // Windowed and fullscreen paint the same chrome: same header rows, same
+    // divider positions relative to the bottom, same footer.
+    auto [windowed, wl] = describe(120, 30);
+    auto [full, fl] = describe(120, 60);
+    bool sameChrome = true;
+    for (int i = 0; i < 5; ++i) {
+        if (windowed[i] != full[i]) sameChrome = false;
+    }
+    if (windowed[wl.inputRule.top] != full[fl.inputRule.top]) sameChrome = false;
+    if (windowed[wl.input.top] != full[fl.input.top]) sameChrome = false;
+    Check(sameChrome, "A 30-row window and a 60-row fullscreen paint byte-identical chrome");
 }
 
 // ─── 9. Output buffer scrolling ─────────────────────────────────────────────
@@ -1002,8 +1094,9 @@ static void TestResizePreservesState() {
 
     Check(editor.GetBuffer() == typed, "Typed input survives a resize");
     Check(editor.GetPaletteSelection() == selection, "Palette selection survives a resize");
-    Check(wide.input.top == 49 && narrow.input.top == 19,
-          "The prompt re-anchors to the new last row");
+    Check(wide.input.top == 48 && narrow.input.top == 18 &&
+          wide.footer.top == 49 && narrow.footer.top == 19,
+          "The prompt and footer re-anchor to the new bottom rows");
     Check(narrow.output.height >= ScreenModel::kMinOutputRows,
           "The output region stays usable after shrinking");
 
@@ -1031,9 +1124,9 @@ int main() {
     TestComposition();
     TestBoxGeometry();
     TestColumns();
-    TestVampireArt();
-    TestStartupLayoutSelection();
-    TestStartupCardGeometry();
+    TestBatArt();
+    TestHeaderVariantSelection();
+    TestHeaderGeometry();
     TestPaletteStateMachine();
     TestPaletteNavigation();
     TestPaletteViewport();
@@ -1046,6 +1139,7 @@ int main() {
     TestScreenRegionMatrix();
     TestHeightResponsiveHeader();
     TestPaletteResponsiveHeight();
+    TestPaintedFrameStructure();
     TestOutputBufferScrolling();
     TestScrollKeyMapping();
     TestResizePreservesState();

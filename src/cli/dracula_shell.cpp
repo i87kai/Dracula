@@ -310,7 +310,7 @@ namespace Dracula {
             std::string welcome = C(ColorRole::Muted) +
                 "Ready. PageUp / PageDown scroll this output region." + R();
             screen.Output().AppendLine("");
-            screen.Output().AppendLine(" " + welcome);
+            screen.Output().AppendLine(welcome);
 
             const std::string prompt = Terminal::DraculaPrompt();
 
@@ -326,7 +326,7 @@ namespace Dracula {
                 // Echo the executed command into the output history so the
                 // transcript reads like a session.
                 screen.Output().AppendLine("");
-                screen.Output().AppendLine(" " + prompt + C(ColorRole::Text) + line + R());
+                screen.Output().AppendLine(prompt + C(ColorRole::Text) + line + R());
 
                 RunCommandLine(line);
                 screen.Output().ScrollToBottom();

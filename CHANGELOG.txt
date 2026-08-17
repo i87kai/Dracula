@@ -1,4 +1,41 @@
 ============================================================
+Dracula v1.0.3
+Release: 2026-08-17
+============================================================
+
+Added
+-----
+- Single Dracula identity mark: a compact 3-row, 15-cell pure-ASCII bat (Art::Bat). It replaces the Braille vampire artwork, the ASCII vampire mark and the two-row mini mark, so there is exactly one piece of artwork in the product.
+- Structural region dividers. The header closes on a full-width rule, a second rule separates the output region from the prompt, and the prompt sits in its own strip above a footer.
+- Footer status strip on the last row: session summary, standing hints ("/ browse commands", "PageUp / PageDown scroll") and the scroll position, right-aligned.
+- ScreenLayout::inputRule and ScreenLayout::footer rectangles, and ScreenModel::kRuleMinHeight / kFooterMinHeight, so the bottom chrome is part of the tested region model.
+- StartupCard::SelectVariant, replacing the width-driven splash layout selection.
+
+Changed
+-------
+- The persistent header is now one design at every terminal size: bat mark, identity/version/platform, engines, working directory, divider. Five rows in a small window and five rows in fullscreen.
+- HeaderVariant is now Standard / Compact / Minimal / None. Compact and Minimal are cramped-terminal fallbacks, not alternative designs.
+- The bottom three rows (divider, prompt, footer) are laid out first, from the last row upwards, so the prompt strip can never be squeezed by anything above it.
+- Every region shares one 2-cell left margin, so the header text, output, prompt and footer all start on the same column.
+- The scroll position indicator moved from a status row inside the output region to the footer, giving the output region one more row.
+- The startup card box, the two-column splash, the tips block and the "Large"/"Stacked" layouts are gone: the header is composed from rules and columns instead of a drawn box.
+
+Fixed
+-----
+- Fixed the windowed and fullscreen layouts looking like two different products. The header used to degrade through four visually distinct variants, so a non-maximized window showed a cramped text banner where fullscreen showed a large card.
+- Fixed the header consuming a disproportionate share of an ordinary window: the old Full card was 20+ rows, the new header is 5 at any size.
+- Fixed the prompt reading as glued to the last line of output, by giving it its own strip between two rules.
+- Fixed the header having to change shape on terminals without Unicode support: the bat mark is ASCII, so only the divider glyph falls back.
+
+Verified
+--------
+- Clean Release build (GCC, MinGW Makefiles, -O3) with no warnings or errors.
+- 173 terminal UI checks pass, including the width x height region matrix, bottom-chrome ownership of the last three rows, header identity from 20 to 80 rows, and header/output proportion in both windowed and fullscreen geometry.
+- 112 analysis-core audit checks pass; test_emulate_buffer passes; CTest 3/3.
+- Real Dracula.exe runs in a normal window and in fullscreen: identical structure, aligned dividers, dominant output region, working PageUp/PageDown and wheel scrolling, working command palette.
+- Redirected stdout and --mcp remain free of artwork and ANSI chrome.
+
+============================================================
 Dracula v1.0.2
 Release: 2026-08-17
 ============================================================

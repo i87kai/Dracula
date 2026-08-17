@@ -4,24 +4,30 @@
 // Dracula persistent interactive screen.
 //
 // The terminal is divided into fixed regions recomputed from the live terminal
-// size and repainted from retained state:
+// size and repainted from retained state. Top to bottom:
 //
-//   HeaderRegion   the approved Dracula card - never scrolls away
+//   HeaderRegion   the Dracula bat mark + identity, closed by a divider
 //   OutputRegion   a scrollable viewport over the session's output history
 //   PaletteRegion  transient rows reserved above the input while the palette
 //                  is open; never written into the output history
-//   InputRegion    the prompt, anchored to the last row
+//   InputRule      the divider that separates the output from the prompt
+//   InputRegion    the prompt, in its own strip
+//   FooterRegion   one status / hint strip on the very last row
+//
+// The three bottom rows are fixed chrome, so the prompt never looks glued to
+// the output and the structure is identical in a small window and fullscreen -
+// only the number of output rows changes.
 //
 // Region arithmetic lives in ScreenModel and is a pure function of
 // (width, height, suggestion count) so it can be tested without a console.
 //
 // The sizing rule is a strict priority order, not a leftover calculation:
 //
-//   1. the input row is always visible
+//   1. the prompt strip is always visible
 //   2. the output viewport keeps a usable minimum
 //   3. the palette fits (shrinking its own viewport if it must)
 //   4. only then does the header claim what is left, degrading through
-//      Full -> FullNoTips -> Compact -> Minimal -> None
+//      Standard -> Compact -> Minimal -> None
 //
 // Command implementations know nothing about any of this: they print normally
 // and an OutputSink streambuf routes it into OutputBuffer.
@@ -51,11 +57,13 @@ namespace Dracula {
     };
 
     struct ScreenLayout {
-        Rect header;
+        Rect header;      // includes its closing divider
         Rect output;
         Rect palette;
+        Rect inputRule;   // divider between the output region and the prompt
         Rect input;
-        HeaderVariant headerVariant = HeaderVariant::Full;
+        Rect footer;      // status / hint strip on the last row
+        HeaderVariant headerVariant = HeaderVariant::Standard;
         int paletteItems = 0;     // suggestion rows the palette may display
         bool hasHeader = false;
     };
@@ -69,8 +77,11 @@ namespace Dracula {
         // that the palette is dropped too - the prompt always survives.
         static constexpr int kMinOutputRows = 3;
 
-        // Rows the status line occupies between the output and the palette.
-        static constexpr int kStatusRows = 1;
+        // Shortest terminal that still gets the divider above the prompt, and
+        // the one that still gets the footer strip. Below these the chrome is
+        // given up one row at a time so the prompt itself never is.
+        static constexpr int kRuleMinHeight   = 6;
+        static constexpr int kFooterMinHeight = 8;
 
         // Palette sizing: preferred item rows, and the fewest worth showing.
         static constexpr int kPreferredPaletteItems = 8;
@@ -82,8 +93,8 @@ namespace Dracula {
         static ScreenLayout Compute(int terminalWidth, int terminalHeight,
                                     int suggestionCount, const StartupInfo& info);
 
-        // Rows a header variant occupies at a given width, including the blank
-        // separator row above the card.
+        // Rows a header variant occupies at a given width, including its
+        // leading blank row and its closing divider.
         static int HeaderRows(int terminalWidth, HeaderVariant variant,
                               const StartupInfo& info);
     };
@@ -185,6 +196,14 @@ namespace Dracula {
 
         const ScreenLayout& Layout() const { return m_layout; }
         void Relayout(int suggestionCount);
+
+        // Compose the frame for an explicit geometry, without a console
+        // attached. This is the same composition the real paint uses, so the
+        // layout tests can verify the painted regions and not just the
+        // rectangles. It leaves the screen laid out for that geometry.
+        std::vector<std::string> PreviewFrame(int width, int height,
+                                              const LineEditor& editor,
+                                              const std::string& prompt);
 
     private:
         void RestoreStreams();

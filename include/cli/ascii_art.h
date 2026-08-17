@@ -3,10 +3,15 @@
 //
 // Dracula UI assets.
 //
-// The Vampire Dracula artwork is compiled directly into the executable as a
-// constexpr asset. It is deliberately NOT loaded from a file at runtime so a
-// released Dracula.exe renders identically no matter which directory it is
-// launched from.
+// Dracula has exactly ONE piece of identity artwork: the compact bat mark. It
+// is small enough (3 rows) to sit beside the identity text in the persistent
+// header at any terminal size, which is what lets the windowed and fullscreen
+// layouts look the same.
+//
+// The mark is compiled directly into the executable rather than loaded from a
+// file at runtime, so a released Dracula.exe renders identically no matter
+// which directory it is launched from. It is pure ASCII, so it also renders
+// identically with --no-unicode.
 //
 
 #include <string>
@@ -15,16 +20,10 @@
 namespace Dracula {
 namespace Art {
 
-    // The supplied Vampire Dracula artwork, one entry per row.
-    // 16 rows x 52 display cells (U+28xx Braille, single width each).
-    const std::vector<std::string>& Vampire();
-
-    // A small ASCII-only vampire mark for narrow terminals.
-    const std::vector<std::string>& VampireCompact();
-
-    // A two-row vampire mark for short terminals, where the full artwork
-    // cannot be shown without starving the output viewport.
-    const std::vector<std::string>& VampireMini();
+    // The Dracula bat mark: 3 rows x 15 display cells, pure ASCII.
+    // Deliberately the only artwork in the product - there is no large splash
+    // variant to fall back to or degrade from.
+    const std::vector<std::string>& Bat();
 
     // Maximum visible width of an art block, in display cells.
     size_t MaxWidth(const std::vector<std::string>& art);

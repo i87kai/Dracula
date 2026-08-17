@@ -8,16 +8,19 @@
 
 namespace Dracula {
 
+    namespace {
+        // Left margin shared by the header, the output region, the prompt and the
+        // footer, so every region's text starts on the same column.
+        constexpr size_t kIndent = 2;
+    }
+
     // ─── Region arithmetic ──────────────────────────────────────────────────
 
     int ScreenModel::HeaderRows(int terminalWidth, HeaderVariant variant,
                                 const StartupInfo& info) {
         if (variant == HeaderVariant::None) return 0;
-        const int rows = static_cast<int>(
+        return static_cast<int>(
             StartupCard::RenderHeader(terminalWidth, variant, info).size());
-        if (rows == 0) return 0;
-        // One blank separator row above the card, as in the approved design.
-        return rows + 1;
     }
 
     ScreenLayout ScreenModel::Compute(int terminalWidth, int terminalHeight,
@@ -27,34 +30,45 @@ namespace Dracula {
         const int W = std::max(terminalWidth, 20);
         const int H = std::max(terminalHeight, 3);
 
-        // 1. The prompt owns the last row unconditionally.
-        layout.input = Rect{H - 1, 0, W, 1};
+        // 1. The bottom chrome is laid out first, from the last row upwards, so
+        //    the prompt strip can never be squeezed out by anything above it.
+        //    On a very short terminal the footer goes first and the divider
+        //    second; the prompt row itself always survives.
+        const int footerRows = H >= kFooterMinHeight ? 1 : 0;
+        const int ruleRows   = H >= kRuleMinHeight   ? 1 : 0;
+
+        layout.footer    = Rect{H - footerRows, 0, W, footerRows};
+        layout.input     = Rect{H - 1 - footerRows, 0, W, 1};
+        layout.inputRule = Rect{layout.input.top - ruleRows, 0, W, ruleRows};
+
+        // Rows above the bottom chrome, shared by header, output and palette.
+        const int above = std::max(0, layout.inputRule.top);
 
         // 2. The header variant is chosen from the terminal geometry ALONE.
         //    It deliberately does not depend on whether the palette is open:
         //    a header that resized every time the user typed "/" would be
         //    unusable. The palette takes its rows from the output region.
-        const int above = std::max(0, H - 1);
+        //    The WIDTH sets the ceiling; the HEIGHT may degrade further.
+        std::vector<HeaderVariant> variants;
+        switch (StartupCard::SelectVariant(W)) {
+            case HeaderVariant::Standard: variants.push_back(HeaderVariant::Standard); [[fallthrough]];
+            case HeaderVariant::Compact:  variants.push_back(HeaderVariant::Compact);  [[fallthrough]];
+            default:                      variants.push_back(HeaderVariant::Minimal);  break;
+        }
 
         // 3. Pick the richest header that still leaves a usable output region.
         //    The preferred floor is tried first across every header variant, so
         //    a tall header is given up before output rows are.
-        static const HeaderVariant kVariants[] = {
-            HeaderVariant::Full,
-            HeaderVariant::FullNoTips,
-            HeaderVariant::Compact,
-            HeaderVariant::Minimal
-        };
-        static const int kFloors[] = {kPreferredOutputRows, 6, 4, kMinOutputRows, 2, 1};
+        static const int kFloors[] = {kPreferredOutputRows, 6, 5, kMinOutputRows, 2, 1};
 
         int headerRows = 0;
         HeaderVariant chosen = HeaderVariant::None;
         bool found = false;
 
         for (int floor : kFloors) {
-            for (HeaderVariant variant : kVariants) {
+            for (HeaderVariant variant : variants) {
                 const int rows = HeaderRows(W, variant, info);
-                if (above - rows - kStatusRows >= floor) {
+                if (above - rows >= floor) {
                     headerRows = rows;
                     chosen = variant;
                     found = true;
@@ -76,7 +90,7 @@ namespace Dracula {
         layout.header = Rect{0, 0, W, headerRows};
 
         // 4. Rows the output and the palette share, below the header.
-        const int available = std::max(1, above - headerRows - kStatusRows);
+        const int available = std::max(1, above - headerRows);
 
         // 5. Size the palette out of that shared space. It first tries to leave
         //    the output its preferred height, and only encroaches on the
@@ -100,7 +114,7 @@ namespace Dracula {
         if (outputRows < 1) outputRows = 1;
 
         layout.output = Rect{headerRows, 0, W, outputRows};
-        layout.palette = Rect{H - 1 - paletteRows, 0, W, paletteRows};
+        layout.palette = Rect{layout.inputRule.top - paletteRows, 0, W, paletteRows};
         layout.paletteItems = paletteItems;
 
         return layout;
@@ -360,7 +374,8 @@ namespace Dracula {
         m_layout = ScreenModel::Compute(width, height, suggestionCount, m_info);
 
         // Commands render into the output region, never the raw console width.
-        Terminal::SetContentWidth(std::max(m_layout.output.width - 3, 20));
+        Terminal::SetContentWidth(
+            std::max(m_layout.output.width - static_cast<int>(kIndent) - 2, 20));
 
         if (m_layout.hasHeader &&
             (m_cachedHeaderWidth != m_layout.header.width ||
@@ -376,11 +391,29 @@ namespace Dracula {
         }
     }
 
+    std::vector<std::string> InteractiveScreen::PreviewFrame(int width, int height,
+                                                             const LineEditor& editor,
+                                                             const std::string& prompt) {
+        m_layout = ScreenModel::Compute(width, height,
+                                        static_cast<int>(editor.GetSuggestions().size()),
+                                        m_info);
+        m_headerCache = m_layout.hasHeader
+                      ? StartupCard::RenderHeader(m_layout.header.width,
+                                                  m_layout.headerVariant, m_info)
+                      : std::vector<std::string>{};
+        m_cachedHeaderWidth = -1;   // force a real repaint to recache
+
+        int row = 0, column = 0;
+        return ComposeFrame(editor, prompt, row, column);
+    }
+
     std::vector<std::string> InteractiveScreen::ComposeFrame(const LineEditor& editor,
                                                              const std::string& prompt,
                                                              int& outCursorRow,
                                                              int& outCursorColumn) const {
-        const int H = m_layout.input.top + 1;
+        // The frame is the whole screen: the footer, when present, owns the row
+        // below the prompt.
+        const int H = std::max(m_layout.footer.Bottom(), m_layout.input.Bottom());
         const int W = m_layout.input.width;
         std::vector<std::string> frame(static_cast<size_t>(std::max(H, 1)));
 
@@ -393,49 +426,27 @@ namespace Dracula {
                 Text::Truncate(content, static_cast<size_t>(std::max(W - 1, 1)));
         };
 
-        // Header - UI chrome, never part of the output history.
+        const std::string border = Terminal::Color(ColorRole::Border);
+        const std::string rule   = border +
+            Text::HorizontalRule(static_cast<size_t>(std::max(W - 1, 1))) + reset;
+
+        // Header - UI chrome, never part of the output history. The rows already
+        // carry their own indentation and closing divider.
         if (m_layout.hasHeader) {
             for (size_t i = 0; i < m_headerCache.size(); ++i) {
-                put(m_layout.header.top + 1 + static_cast<int>(i), " " + m_headerCache[i]);
+                put(m_layout.header.top + static_cast<int>(i), m_headerCache[i]);
             }
         }
 
         // Output viewport, wrapped for the current width.
-        const int outputWidth = std::max(m_layout.output.width - 2, 10);
+        const int outputWidth =
+            std::max(m_layout.output.width - static_cast<int>(kIndent) - 1, 10);
         {
             const auto rows = m_output.VisibleRows(m_layout.output.height, outputWidth);
             for (size_t i = 0; i < rows.size(); ++i) {
-                put(m_layout.output.top + static_cast<int>(i), " " + rows[i]);
+                put(m_layout.output.top + static_cast<int>(i),
+                    std::string(kIndent, ' ') + rows[i]);
             }
-        }
-
-        // Status row: session summary on the left, scroll position on the right.
-        {
-            const int statusRow = m_layout.output.Bottom();
-            std::string right;
-            if (m_output.LineCount() > 0 &&
-                (m_output.HasOlderAbove(m_layout.output.height, outputWidth) ||
-                 m_output.HasNewerBelow(m_layout.output.height, outputWidth))) {
-                size_t first = 0, last = 0;
-                m_output.VisibleRange(m_layout.output.height, outputWidth, first, last);
-                right = "Output " + std::to_string(first) + "-" + std::to_string(last) +
-                        " / " + std::to_string(m_output.LineCount());
-                if (!m_output.IsFollowing()) right += "   PageDown to follow";
-            }
-
-            std::string status;
-            if (!m_status.empty() || !right.empty()) {
-                const size_t inner = static_cast<size_t>(std::max(W - 3, 10));
-                std::string body = Text::Truncate(m_status, inner);
-                if (!right.empty()) {
-                    const size_t rightW = Text::VisibleWidth(right);
-                    if (Text::VisibleWidth(body) + rightW + 3 <= inner) {
-                        body = Text::PadRight(body, inner - rightW) + right;
-                    }
-                }
-                status = " " + muted + body + reset;
-            }
-            put(statusRow, status);
         }
 
         // Palette - transient rows above the prompt. It shrinks its own
@@ -451,9 +462,15 @@ namespace Dracula {
             }
         }
 
-        // Input.
+        // Divider above the prompt: the output region ends here, the input
+        // strip begins.
+        if (m_layout.inputRule.height > 0) {
+            put(m_layout.inputRule.top, rule);
+        }
+
+        // Input, in its own strip and on the same left margin as everything else.
         {
-            const size_t promptWidth = Text::VisibleWidth(prompt);
+            const size_t promptWidth = Text::VisibleWidth(prompt) + kIndent;
             const size_t available = static_cast<size_t>(W) > promptWidth + 2
                                    ? static_cast<size_t>(W) - promptWidth - 2
                                    : 10;
@@ -461,10 +478,58 @@ namespace Dracula {
             const std::string visible = editor.VisibleInput(available, cursorOffset);
 
             put(m_layout.input.top,
-                prompt + Terminal::Color(ColorRole::Text) + visible + reset);
+                std::string(kIndent, ' ') + prompt +
+                Terminal::Color(ColorRole::Text) + visible + reset);
 
             outCursorRow = m_layout.input.top;
             outCursorColumn = static_cast<int>(promptWidth + cursorOffset);
+        }
+
+        // Footer: session state and scroll position on the left/right of one
+        // quiet strip, with the standing hints when there is nothing to report.
+        if (m_layout.footer.height > 0) {
+            const size_t inner = static_cast<size_t>(std::max(W - 1 - static_cast<int>(kIndent), 10));
+
+            std::string right;
+            if (m_output.LineCount() > 0 &&
+                (m_output.HasOlderAbove(m_layout.output.height, outputWidth) ||
+                 m_output.HasNewerBelow(m_layout.output.height, outputWidth))) {
+                size_t first = 0, last = 0;
+                m_output.VisibleRange(m_layout.output.height, outputWidth, first, last);
+                right = "output " + std::to_string(first) + "-" + std::to_string(last) +
+                        " / " + std::to_string(m_output.LineCount());
+                if (!m_output.IsFollowing()) right += "   PageDown to follow";
+            }
+
+            // Session state earns the left of the strip; the standing hints only
+            // take the space that is actually left over, so the footer never
+            // shows a half-truncated hint.
+            const std::string sep = "   " + Terminal::Bullet() + "   ";
+            const std::string hints = "/ browse commands" + sep + "PageUp / PageDown scroll";
+            const size_t rightBudget =
+                right.empty() ? inner
+                              : (inner > Text::VisibleWidth(right) + 3
+                                 ? inner - Text::VisibleWidth(right) - 3 : 0);
+
+            std::string left = m_status;
+            if (left.empty()) {
+                left = hints;
+            } else if (Text::VisibleWidth(left) + Text::VisibleWidth(sep) +
+                       Text::VisibleWidth(hints) <= rightBudget) {
+                left += sep + hints;
+            }
+
+            std::string body = Text::Truncate(left, inner);
+            if (!right.empty()) {
+                const size_t rightW = Text::VisibleWidth(right);
+                if (Text::VisibleWidth(body) + rightW + 3 <= inner) {
+                    body = Text::PadRight(body, inner - rightW) + right;
+                } else {
+                    body = Text::PadRight(Text::Truncate(left, inner - rightW - 3),
+                                          inner - rightW) + right;
+                }
+            }
+            put(m_layout.footer.top, std::string(kIndent, ' ') + muted + body + reset);
         }
 
         return frame;

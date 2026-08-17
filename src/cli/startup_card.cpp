@@ -11,21 +11,25 @@ namespace Dracula {
 
     namespace {
 
-        constexpr int kMaxCardWidth = 118;
-        constexpr int kBoxPadding   = 2;
-        constexpr int kColumnGap    = 3;
+        // Left margin shared by the header, the output region and the prompt, so
+        // every region's text starts on the same column.
+        constexpr size_t kIndent    = 2;
+        constexpr size_t kColumnGap = 3;
 
         std::string Muted()   { return Terminal::Color(ColorRole::Muted); }
         std::string Reset()   { return Terminal::Color(ColorRole::Reset); }
         std::string Primary() { return Terminal::Color(ColorRole::Primary); }
         std::string Title()   { return Terminal::Color(ColorRole::Title); }
         std::string Tech()    { return Terminal::Color(ColorRole::Technical); }
-        std::string Accent()  { return Terminal::Color(ColorRole::Accent); }
-        std::string Textual() { return Terminal::Color(ColorRole::Text); }
+        std::string Border()  { return Terminal::Color(ColorRole::Border); }
 
-        std::string Label(const std::string& text) {
-            return Accent() + text + Reset();
+        // Usable width: one cell short of the terminal, because writing into the
+        // final column makes some terminals emit a spurious wrap.
+        size_t Usable(int terminalWidth) {
+            return static_cast<size_t>(std::max(terminalWidth - 1, 12));
         }
+
+        std::string Sep() { return "  " + Terminal::Bullet() + "  "; }
 
         // Shorten a filesystem path so it fits, keeping the tail (which is the
         // part a human recognises).
@@ -53,61 +57,31 @@ namespace Dracula {
             return head + tail;
         }
 
-        std::vector<std::string> InformationBlock(const StartupInfo& info,
-                                                  size_t width,
-                                                  bool rich) {
-            std::vector<std::string> lines;
-
-            lines.push_back(Title() + "Dracula" + Reset());
-            lines.push_back(Textual() + "Binary Intelligence & Reverse Engineering" + Reset());
-            lines.push_back("");
-
-            std::string build = "v" + info.version;
-            if (!info.architecture.empty()) build += "  " + Terminal::Bullet() + "  " + info.architecture;
-            if (!info.buildMode.empty())    build += "  " + Terminal::Bullet() + "  " + info.buildMode;
-            lines.push_back(Muted() + build + Reset());
-
-            if (rich) {
-                lines.push_back("");
-                lines.push_back(Label("Engines"));
-
-                // Two engine names per row keeps the block compact without
-                // cramming everything onto a single line.
-                size_t colWidth = std::max<size_t>(14, width / 2);
-                for (size_t i = 0; i < info.engines.size(); i += 2) {
-                    std::string row = Tech() + Text::PadRight(info.engines[i], colWidth) + Reset();
-                    if (i + 1 < info.engines.size()) {
-                        row += Tech() + info.engines[i + 1] + Reset();
-                    }
-                    lines.push_back(row);
-                }
-
-                lines.push_back("");
-                lines.push_back(Label("Working directory"));
-                lines.push_back(Muted() + ShortenPath(info.workingDirectory, width) + Reset());
-            } else {
-                std::string joined;
-                for (size_t i = 0; i < info.engines.size(); ++i) {
-                    if (i) joined += "  " + Terminal::Bullet() + "  ";
-                    joined += info.engines[i];
-                }
-                lines.push_back("");
-                lines.push_back(Tech() + Text::Truncate(joined, width) + Reset());
-                lines.push_back("");
-                lines.push_back(Muted() + "Working directory" + Reset());
-                lines.push_back(Muted() + ShortenPath(info.workingDirectory, width) + Reset());
-            }
-
-            return lines;
+        // "Dracula  v1.0.3  •  x64  •  Release"
+        std::string IdentityRow(const StartupInfo& info) {
+            std::string row = Title() + "Dracula" + Reset() + Muted() + "  v" + info.version;
+            if (!info.architecture.empty()) row += Sep() + info.architecture;
+            if (!info.buildMode.empty())    row += Sep() + info.buildMode;
+            row += Reset();
+            return row;
         }
 
-        std::vector<std::string> TipLines(const StartupInfo& info, size_t width) {
-            std::vector<std::string> lines;
-            for (const auto& tip : info.tips) {
-                lines.push_back(Muted() + Terminal::Bullet() + " " + Reset() +
-                                Textual() + Text::Truncate(tip, width - 2) + Reset());
+        std::string EngineRow(const StartupInfo& info, size_t width) {
+            std::string joined;
+            for (size_t i = 0; i < info.engines.size(); ++i) {
+                if (i) joined += Sep();
+                joined += info.engines[i];
             }
-            return lines;
+            return Tech() + Text::Truncate(joined, width) + Reset();
+        }
+
+        // The full-bleed rule that closes the header region.
+        std::string Divider(int terminalWidth) {
+            return Border() + Text::HorizontalRule(Usable(terminalWidth)) + Reset();
+        }
+
+        std::string Indent(const std::string& body) {
+            return std::string(kIndent, ' ') + body;
         }
 
     } // namespace
@@ -119,9 +93,8 @@ namespace Dracula {
         info.architecture = "x64";
         info.buildMode    = "Release";
         info.engines      = {
-            "Capstone 5", "Unicorn 2",
-            "Safe PE",    "CFG / XRefs",
-            "Win32 HLE",  "MCP Server"
+            "Capstone 5", "Unicorn 2", "Safe PE",
+            "CFG / XRefs", "Win32 HLE", "MCP Server"
         };
         info.workingDirectory = Paths::CurrentWorkingDir();
         info.tips = {
@@ -131,209 +104,87 @@ namespace Dracula {
         return info;
     }
 
-    StartupLayout StartupCard::SelectLayout(int terminalWidth) {
-        // The supplied artwork is Braille (U+28xx). Without Unicode support the
-        // ASCII mark is used instead, so the whole card drops to the compact
-        // layout rather than mixing ASCII frames with Unicode art.
-        if (!Terminal::SupportsUnicode()) {
-            return terminalWidth >= kCompactMinWidth ? StartupLayout::Compact
-                                                     : StartupLayout::Minimal;
-        }
-        if (terminalWidth >= kLargeMinWidth)   return StartupLayout::Large;
-        if (terminalWidth >= kStackedMinWidth) return StartupLayout::Stacked;
-        if (terminalWidth >= kCompactMinWidth) return StartupLayout::Compact;
-        return StartupLayout::Minimal;
+    HeaderVariant StartupCard::SelectVariant(int terminalWidth) {
+        if (terminalWidth >= kStandardMinWidth) return HeaderVariant::Standard;
+        if (terminalWidth >= kCompactMinWidth)  return HeaderVariant::Compact;
+        return HeaderVariant::Minimal;
     }
 
-    int StartupCard::CardWidth(int terminalWidth) {
-        int width = std::min(terminalWidth - 2, kMaxCardWidth);
-        return std::max(width, 30);
-    }
-
-    std::vector<std::string> StartupCard::RenderCard(int terminalWidth, const StartupInfo& info) {
-        return RenderCardMode(terminalWidth, SelectLayout(terminalWidth), info);
-    }
-
-    std::vector<std::string> StartupCard::RenderCardMode(int terminalWidth,
-                                                         StartupLayout layout,
-                                                         const StartupInfo& info,
-                                                         bool includeTips) {
-
-        if (layout == StartupLayout::Minimal) {
-            std::vector<std::string> lines;
-            size_t w = static_cast<size_t>(std::max(terminalWidth - 1, 10));
-            lines.push_back(Text::Truncate(Title() + "Dracula v" + info.version + Reset(), w));
-            lines.push_back(Text::Truncate(Textual() + "Binary Intelligence & Reverse Engineering" + Reset(), w));
-            return lines;
-        }
-
-        const int cardWidth = CardWidth(terminalWidth);
-        Text::BoxBuilder box(static_cast<size_t>(cardWidth), kBoxPadding);
-        const size_t inner = box.InnerWidth();
-
-        box.AddBlank();
-
-        if (layout == StartupLayout::Large) {
-            const auto& art = Art::Vampire();
-            const size_t artWidth = Art::MaxWidth(art);
-            const size_t rightWidth = inner > artWidth + kColumnGap
-                                    ? inner - artWidth - kColumnGap
-                                    : 20;
-
-            auto artBlock = Art::Colorize(art);
-            auto infoBlock = InformationBlock(info, rightWidth, true);
-
-            // Vertically centre the shorter information column against the art.
-            if (infoBlock.size() < artBlock.size()) {
-                size_t offset = (artBlock.size() - infoBlock.size()) / 2;
-                infoBlock.insert(infoBlock.begin(), offset, "");
-            }
-
-            box.AddLines(Text::RenderColumns({artBlock, infoBlock},
-                                             {artWidth, rightWidth},
-                                             kColumnGap));
-        } else {
-            const auto& art = (layout == StartupLayout::Stacked)
-                            ? Art::Vampire()
-                            : Art::VampireCompact();
-            const size_t artWidth = Art::MaxWidth(art);
-
-            if (artWidth <= inner) {
-                size_t indent = (inner - artWidth) / 2;
-                for (const auto& row : Art::Colorize(art)) {
-                    box.AddLine(std::string(indent, ' ') + row);
-                }
-                box.AddBlank();
-            }
-
-            box.AddLines(InformationBlock(info, inner, layout == StartupLayout::Stacked));
-        }
-
-        box.AddBlank();
-
-        // Tips are helpful, not essential: they are the first thing dropped
-        // when the terminal is too short to afford them.
-        if (includeTips) {
-            auto tips = TipLines(info, inner);
-            if (!tips.empty()) {
-                box.AddDivider();
-                box.AddLines(tips);
-            }
-        }
-
-        return box.Build();
+    std::vector<std::string> StartupCard::RenderHeader(int terminalWidth,
+                                                       const StartupInfo& info) {
+        return RenderHeader(terminalWidth, SelectVariant(terminalWidth), info);
     }
 
     std::vector<std::string> StartupCard::RenderHeader(int terminalWidth,
                                                        HeaderVariant variant,
                                                        const StartupInfo& info) {
+        if (variant == HeaderVariant::None) return {};
+
+        const size_t usable = Usable(terminalWidth);
+        std::vector<std::string> rows;
+
+        // A narrow terminal cannot fit the art column plus a legible text
+        // column, so it renders the text-only variant regardless of the request.
+        const size_t artWidth = Art::MaxWidth(Art::Bat());
+        const size_t textWidth = usable > kIndent + artWidth + kColumnGap + 16
+                               ? usable - kIndent - artWidth - kColumnGap
+                               : 0;
+        if (variant == HeaderVariant::Standard && textWidth == 0) {
+            variant = HeaderVariant::Compact;
+        }
+
         switch (variant) {
-            case HeaderVariant::None:
-                return {};
-
-            case HeaderVariant::Full:
-                return RenderCardMode(terminalWidth, SelectLayout(terminalWidth), info, true);
-
-            case HeaderVariant::FullNoTips:
-                return RenderCardMode(terminalWidth, SelectLayout(terminalWidth), info, false);
-
-            case HeaderVariant::Compact: {
-                // Four rows: the two-row vampire mark beside the identity and
-                // the engine list. Same palette, same borders, same identity.
-                const int cardWidth = CardWidth(terminalWidth);
-                Text::BoxBuilder box(static_cast<size_t>(cardWidth), kBoxPadding);
-                const size_t inner = box.InnerWidth();
-
-                const auto& mark = Art::VampireMini();
-                const size_t markWidth = Art::MaxWidth(mark);
-                const size_t rightWidth = inner > markWidth + kColumnGap
-                                        ? inner - markWidth - kColumnGap
-                                        : inner;
-
-                std::string identity = Title() + "Dracula" + Reset() +
-                                       Muted() + "  v" + info.version;
-                if (!info.architecture.empty()) {
-                    identity += "  " + Terminal::Bullet() + "  " + info.architecture;
-                }
-                if (!info.buildMode.empty()) {
-                    identity += "  " + Terminal::Bullet() + "  " + info.buildMode;
-                }
-                identity += Reset();
-
-                std::string engines;
-                for (size_t i = 0; i < info.engines.size(); ++i) {
-                    if (i) engines += "  " + Terminal::Bullet() + "  ";
-                    engines += info.engines[i];
-                }
-
-                std::vector<std::string> right = {
-                    identity,
-                    Tech() + Text::Truncate(engines, rightWidth) + Reset()
+            case HeaderVariant::Standard: {
+                std::vector<std::string> text = {
+                    Text::Truncate(IdentityRow(info), textWidth),
+                    EngineRow(info, textWidth),
+                    Muted() + ShortenPath(info.workingDirectory, textWidth) + Reset()
                 };
 
-                if (markWidth + kColumnGap < inner) {
-                    box.AddLines(Text::RenderColumns({Art::Colorize(mark), right},
-                                                     {markWidth, rightWidth},
-                                                     kColumnGap));
-                } else {
-                    box.AddLines(right);
+                auto art = Art::Colorize(Art::Bat());
+                rows.push_back("");
+                for (const auto& row : Text::RenderColumns({art, text},
+                                                           {artWidth, textWidth},
+                                                           kColumnGap)) {
+                    rows.push_back(Indent(row));
                 }
-                return box.Build();
+                break;
+            }
+
+            case HeaderVariant::Compact: {
+                const size_t textW = usable > kIndent ? usable - kIndent : usable;
+                rows.push_back("");
+                rows.push_back(Indent(Text::Truncate(IdentityRow(info), textW)));
+                rows.push_back(Indent(EngineRow(info, textW)));
+                break;
             }
 
             case HeaderVariant::Minimal:
             default: {
-                const size_t w = static_cast<size_t>(std::max(terminalWidth - 2, 12));
-
-                std::string identity = Title() + "Dracula" + Reset() +
-                                       Muted() + "  v" + info.version;
-                if (!info.architecture.empty()) {
-                    identity += "  " + Terminal::Bullet() + "  " + info.architecture;
-                }
-                if (!info.buildMode.empty()) {
-                    identity += "  " + Terminal::Bullet() + "  " + info.buildMode;
-                }
-                identity += Reset();
-
-                std::string engines;
-                for (size_t i = 0; i < info.engines.size(); ++i) {
-                    if (i) engines += "  " + Terminal::Bullet() + "  ";
-                    engines += info.engines[i];
-                }
-
-                return {
-                    Text::Truncate(identity, w),
-                    Text::Truncate(Tech() + engines + Reset(), w),
-                    Terminal::Color(ColorRole::Border) + Text::HorizontalRule(w) + Reset()
-                };
+                const size_t textW = usable > kIndent ? usable - kIndent : usable;
+                rows.push_back(Indent(Text::Truncate(IdentityRow(info), textW)));
+                break;
             }
         }
+
+        rows.push_back(Divider(terminalWidth));
+        return rows;
     }
 
     std::vector<std::string> StartupCard::Render(int terminalWidth, const StartupInfo& info) {
-        const StartupLayout layout = SelectLayout(terminalWidth);
-        std::vector<std::string> out;
+        std::vector<std::string> out = RenderHeader(terminalWidth, info);
 
-        auto card = RenderCard(terminalWidth, info);
+        const std::string hint =
+            Indent(Muted() + "Type " + Reset() +
+                   Primary() + "/" + Reset() +
+                   Muted() + " to browse commands" + Reset() +
+                   Muted() + Sep() + Reset() +
+                   Tech() + "/help" + Reset() +
+                   Muted() + " for the full reference" + Reset());
 
-        const std::string margin = (layout == StartupLayout::Minimal) ? "" : " ";
         out.push_back("");
-        for (const auto& row : card) {
-            out.push_back(margin + row);
-        }
+        out.push_back(Text::Truncate(hint, Usable(terminalWidth)));
         out.push_back("");
-
-        std::string hint = margin + "  " + Muted() + "Type " + Reset() +
-                           Primary() + "/" + Reset() +
-                           Muted() + " to browse commands" + Reset() +
-                           Muted() + "   " + Terminal::Bullet() + "   " + Reset() +
-                           Tech() + "/help" + Reset() +
-                           Muted() + " for the full reference" + Reset();
-        // One cell short of the terminal width: writing into the final column
-        // makes some terminals emit a spurious wrap.
-        out.push_back(Text::Truncate(hint, static_cast<size_t>(std::max(terminalWidth - 1, 10))));
-        out.push_back("");
-
         return out;
     }
 
