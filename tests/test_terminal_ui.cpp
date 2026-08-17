@@ -1249,6 +1249,128 @@ static void TestSelectionMode() {
           "Leaving selection mode does not move the output viewport");
 }
 
+static void TestCommandSubmissionAndEnterHandling() {
+    Section("Screen 8: Enter submission, Tab selection, and command execution");
+
+    // 1. Manually typed command with no arguments (/mcp) submits immediately on Enter
+    {
+        LineEditor editor;
+        editor.ResetBuffer();
+        editor.InsertString("/mcp");
+        Check(editor.IsPaletteActive(), "Typing '/mcp' activates command palette");
+
+        InputEvent enterEv{Key::Enter};
+        auto action = editor.HandleKey(enterEv);
+        Check(action == LineEditor::EditAction::Submit,
+              "Enter on typed '/mcp' returns EditAction::Submit");
+        Check(editor.GetBuffer() == "/mcp",
+              "Enter on typed '/mcp' preserves command line '/mcp'");
+        Check(!editor.IsPaletteActive(), "Enter closes palette after submission");
+    }
+
+    // 2. Selecting slash command with Tab then pressing Enter
+    {
+        LineEditor editor;
+        editor.ResetBuffer();
+        editor.InsertString("/mc");
+        Check(editor.IsPaletteActive(), "Typing '/mc' filters palette");
+
+        InputEvent tabEv{Key::Tab};
+        auto tabAction = editor.HandleKey(tabEv);
+        Check(tabAction == LineEditor::EditAction::Continue,
+              "Tab completes selected command into input buffer");
+        Check(editor.GetBuffer() == "/mcp ",
+              "Tab acceptance inserts '/mcp ' with space for arguments");
+        Check(!editor.IsPaletteActive(), "Tab completion closes palette");
+
+        InputEvent enterEv{Key::Enter};
+        auto enterAction = editor.HandleKey(enterEv);
+        Check(enterAction == LineEditor::EditAction::Submit,
+              "Enter after Tab completion returns EditAction::Submit");
+        Check(editor.GetBuffer() == "/mcp ",
+              "Buffer remains '/mcp ' on submission");
+    }
+
+    // 3. Manually typed command (/help, /version, /exit)
+    {
+        LineEditor editor;
+        editor.ResetBuffer();
+        editor.InsertString("/version");
+        InputEvent enterEv{Key::Enter};
+        Check(editor.HandleKey(enterEv) == LineEditor::EditAction::Submit,
+              "Enter on typed '/version' returns Submit");
+
+        editor.ResetBuffer();
+        editor.InsertString("/help");
+        Check(editor.HandleKey(enterEv) == LineEditor::EditAction::Submit,
+              "Enter on typed '/help' returns Submit");
+
+        editor.ResetBuffer();
+        editor.InsertString("/exit");
+        Check(editor.HandleKey(enterEv) == LineEditor::EditAction::Submit,
+              "Enter on typed '/exit' returns Submit");
+    }
+
+    // 4. Manually typed command with arguments
+    {
+        LineEditor editor;
+        editor.ResetBuffer();
+        editor.InsertString("/analyze samples\\test_sample.exe");
+        Check(!editor.IsPaletteActive(), "Commands with arguments leave palette closed");
+
+        InputEvent enterEv{Key::Enter};
+        Check(editor.HandleKey(enterEv) == LineEditor::EditAction::Submit,
+              "Enter on typed command with arguments returns Submit");
+        Check(editor.GetBuffer() == "/analyze samples\\test_sample.exe",
+              "Buffer preserves full command and arguments");
+    }
+
+    // 5. Palette open on command requiring arguments (/analyze)
+    {
+        LineEditor editor;
+        editor.ResetBuffer();
+        editor.InsertString("/analyze");
+        Check(editor.IsPaletteActive(), "Typing '/analyze' leaves palette open on analyze");
+
+        InputEvent enterEv{Key::Enter};
+        auto firstEnter = editor.HandleKey(enterEv);
+        Check(firstEnter == LineEditor::EditAction::Continue,
+              "First Enter on argument-requiring command accepts command name with trailing space");
+        Check(editor.GetBuffer() == "/analyze ",
+              "Buffer is now '/analyze ' ready for argument input");
+        Check(!editor.IsPaletteActive(), "Palette closes after accepting command");
+
+        editor.InsertString("samples\\test_sample.exe");
+        Check(editor.GetBuffer() == "/analyze samples\\test_sample.exe",
+              "Arguments typed after acceptance");
+
+        auto secondEnter = editor.HandleKey(enterEv);
+        Check(secondEnter == LineEditor::EditAction::Submit,
+              "Second Enter submits complete command line with arguments");
+    }
+
+    // 6. Execute real commands through DraculaShell
+    {
+        DraculaShell shell;
+
+        // /version
+        Check(shell.ExecuteCommand("/version"), "ExecuteCommand('/version') succeeds");
+
+        // /help
+        Check(shell.ExecuteCommand("/help"), "ExecuteCommand('/help') succeeds");
+
+        // /mcp (must execute cleanly without blocking)
+        Check(shell.ExecuteCommand("/mcp"), "ExecuteCommand('/mcp') executes cleanly");
+
+        // /analyze with file
+        Check(shell.ExecuteCommand("/analyze samples\\test_sample.exe"),
+              "ExecuteCommand('/analyze samples\\\\test_sample.exe') executes pipeline");
+
+        // /exit
+        Check(shell.ExecuteCommand("/exit"), "ExecuteCommand('/exit') terminates shell");
+    }
+}
+
 int main() {
     Terminal::Initialize();
 
@@ -1280,6 +1402,7 @@ int main() {
     TestScrollKeyMapping();
     TestResizePreservesState();
     TestSelectionMode();
+    TestCommandSubmissionAndEnterHandling();
 
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << " TERMINAL UI RESULTS: \033[1;32m" << g_pass << " PASSED\033[0m, \033[1;31m"

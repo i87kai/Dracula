@@ -442,6 +442,23 @@ namespace Dracula {
         wchar_t ch = key.uChar.UnicodeChar;
         if (ch == 0) return false;
 
+        if (ch == L'\r' || ch == L'\n') {
+            out.key = Key::Enter;
+            return true;
+        }
+        if (ch == L'\t') {
+            out.key = Key::Tab;
+            return true;
+        }
+        if (ch == L'\b' || ch == 127) {
+            out.key = Key::Backspace;
+            return true;
+        }
+        if (ch == 27) {
+            out.key = Key::Escape;
+            return true;
+        }
+
         if (ctrl && ch < 32) {
             switch (ch) {
                 case 1:  out.key = Key::CtrlA; return true;

@@ -721,6 +721,12 @@ namespace Dracula {
         std::cout << Terminal::StripAnsi(prompt) << std::flush;
         if (!std::getline(std::cin, outLine)) return false;
         if (!outLine.empty() && outLine.back() == '\r') outLine.pop_back();
+        if (outLine.size() >= 3 &&
+            static_cast<unsigned char>(outLine[0]) == 0xEF &&
+            static_cast<unsigned char>(outLine[1]) == 0xBB &&
+            static_cast<unsigned char>(outLine[2]) == 0xBF) {
+            outLine = outLine.substr(3);
+        }
         if (!outLine.empty()) AddHistory(outLine);
         return true;
     }

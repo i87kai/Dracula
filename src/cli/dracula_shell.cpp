@@ -375,13 +375,21 @@ namespace Dracula {
     }
 
     bool DraculaShell::ExecuteCommand(const std::string& commandLine) {
+        std::string line = commandLine;
+        if (line.size() >= 3 &&
+            static_cast<unsigned char>(line[0]) == 0xEF &&
+            static_cast<unsigned char>(line[1]) == 0xBB &&
+            static_cast<unsigned char>(line[2]) == 0xBF) {
+            line = line.substr(3);
+        }
+
         // Parse tokens handling quoted arguments
         std::vector<std::string> tokens;
         std::string current;
         bool inQuotes = false;
 
-        for (size_t i = 0; i < commandLine.size(); ++i) {
-            char c = commandLine[i];
+        for (size_t i = 0; i < line.size(); ++i) {
+            char c = line[i];
             if (c == '"') {
                 inQuotes = !inQuotes;
             } else if (c == ' ' && !inQuotes) {
@@ -1080,8 +1088,21 @@ namespace Dracula {
     // ─── System ─────────────────────────────────────────────────────────────
 
     void DraculaShell::HandleMcp(const std::vector<std::string>& args) {
-        McpServer mcp;
-        mcp.RunStdio();
+        Ui::Section("Model Context Protocol (MCP)", "JSON-RPC 2.0 Stdio Server");
+        Ui::KeyState("Status", Ui::State::Good, "Ready");
+        Ui::KeyValue("Protocol version", "2024-11-05");
+        Ui::KeyValue("Server name", "Dracula-Intelligence-Suite");
+        Ui::KeyValue("Server version", Version::String);
+        Ui::KeyValue("CLI stdio flag", "dracula --mcp");
+        Ui::Note("Dracula includes a native MCP stdio server for AI pair programming (Claude, Antigravity, Cursor).");
+        Ui::Lines({
+            "To connect Dracula MCP server to your AI assistant, add to your MCP client config:",
+            "  \"dracula\": {",
+            "    \"command\": \"dracula.exe\",",
+            "    \"args\": [\"--mcp\"]",
+            "  }"
+        });
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleChangelog(const std::vector<std::string>& args) {
