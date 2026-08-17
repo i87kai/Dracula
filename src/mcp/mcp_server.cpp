@@ -86,8 +86,22 @@ namespace Dracula {
 
         if (method == "tools/call") {
             std::string toolName = ExtractJsonField(requestJson, "name");
-            std::string filePath = ExtractJsonField(requestJson, "file_path");
 
+            static const std::set<std::string> kKnownTools = {
+                "analyze_file",
+                "analyze_anti_evasion",
+                "inspect_pe_headers",
+                "audit_security_mitigations",
+                "calculate_entropy",
+                "extract_strings",
+                "scan_hex_pattern"
+            };
+
+            if (kKnownTools.find(toolName) == kKnownTools.end()) {
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32601,\"message\":\"Unknown tool: " + EscapeForJson(toolName) + "\"}}";
+            }
+
+            std::string filePath = ExtractJsonField(requestJson, "file_path");
             if (filePath.empty()) {
                 return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"Missing required 'file_path' argument\"}}";
             }
@@ -194,7 +208,18 @@ namespace Dracula {
 
             if (toolName == "scan_hex_pattern") {
                 std::string pattern = ExtractJsonField(requestJson, "pattern");
-                auto matches = PatternScanner::ScanFile(filePath, pattern);
+                if (pattern.empty()) {
+                    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"Missing required 'pattern' argument\"}}";
+                }
+                auto parseRes = PatternScanner::ParsePatternStrict(pattern);
+                if (!parseRes.IsValid()) {
+                    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"" + EscapeForJson(parseRes.errorMessage) + "\"}}";
+                }
+                std::string scanErr;
+                auto matches = PatternScanner::ScanFile(filePath, parseRes.pattern, &scanErr);
+                if (!scanErr.empty()) {
+                    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(scanErr) + "\"}]}}";
+                }
                 std::ostringstream ss;
                 ss << "Matches (" << matches.size() << "):\n";
                 for (size_t off : matches) {
@@ -203,7 +228,7 @@ namespace Dracula {
                 return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(ss.str()) + "\"}]}}";
             }
 
-            return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32601,\"message\":\"Unknown tool: " + toolName + "\"}}";
+            return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32601,\"message\":\"Unknown tool: " + EscapeForJson(toolName) + "\"}}";
         }
 
         return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32601,\"message\":\"Method not found: " + method + "\"}}";

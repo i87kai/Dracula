@@ -1,4 +1,35 @@
 ============================================================
+Dracula v1.1.2
+Release: 2026-08-17
+============================================================
+
+Fixed
+-----
+- Bug 1: Fixed unhandled std::filesystem_error crash when --analyze or REPL commands are passed a directory path instead of a regular file. Added generic, non-throwing InputValidator with distinct file statuses (DoesNotExist, IsDirectory, NotRegularFile, Unreadable, Empty, Valid).
+- Bug 2: Fixed disassembler falling back to file offset 0 when passed an out-of-bounds RVA (e.g. 0xDEADBEEF), which previously disassembled MZ header bytes 4D 5A as instructions under the fake RVA. PeInspector::RvaToFileOffset now returns std::optional<uint64_t> and enforces section bounds, reporting a clear error when an RVA is unmapped.
+- Bug 3: Fixed decimal values formatted with a 0x hexadecimal prefix across the codebase (e.g. IAT RVA 0x41592 instead of 0xa278, sub_4191 instead of sub_105f). Centralized hex, RVA, VA, and function symbol formatting in common/format.h.
+- Bug 4: Fixed false positive threat scoring (25/100) and spurious missing mitigation findings generated for non-existent target files. AnalysisOrchestrator::AnalyzeFile now validates inputs upfront and aborts cleanly with 0 score and N/A threat level on load errors.
+- Bug 5: Fixed MCP server dispatch order where unknown tool calls returned -32602 Missing required 'file_path' argument instead of -32601 Unknown tool: <name>. Tool names are now validated against registered tools before argument schema checks.
+- Bug 6: Fixed active session command line argument grammar for /scan where multi-token patterns (e.g. /scan 55 48 89 e5) misparsed the first byte token as a file path.
+- Bug 7: Fixed pattern scanner silently returning 0 matches for invalid pattern strings (e.g. "ZZ GG HH"). Implemented PatternScanner::ParsePatternStrict returning 1-based token error positions and rejecting malformed hex tokens.
+- Bug 8: Fixed QEMU dynamic VM analyzer polluting the repo working tree by writing guest_share/dracula_session.ini and copying samples directly into the workspace. QEMU shares are now staged into an isolated temporary folder (%TEMP%/Dracula/session_<id>/) with RAII cleanup on exit.
+- Bug 9: Fixed CLI option ordering for --anti-evasion where Dracula.exe --anti-evasion --compare sample.exe failed with missing target binary while sample.exe --compare succeeded. Argument parsing now treats non-option arguments as positional target files regardless of flag order.
+- Clean exit codes: CLI commands now reliably return exit code 0 on success and exit code 1 on file not found, directory error, invalid RVA, or pattern parse failure.
+
+Added
+-----
+- Generic non-throwing InputValidator (include/common/input_validator.h, src/common/input_validator.cpp).
+- Centralized formatting helpers Format::Hex, Format::Rva, Format::Va, Format::FileOffset, Format::FunctionName (include/common/format.h).
+- Strict pattern parser PatternScanner::ParsePatternStrict with detailed error diagnostics.
+- Comprehensive regression suite TestAuditBugFixesPass covering all 9 confirmed audit issues.
+
+Verified
+--------
+- Clean Release build with MinGW-w64 GCC 16.1.0 and CMake 3.20+.
+- All 5 CTest test suites (EmulateBuffer, DraculaTestSuite, TerminalUi, AntiEvasion, SandboxNetwork) passing 100%.
+- Real-world command line verification of all 9 bug fixes against build/Dracula.exe and MCP server stdio.
+
+============================================================
 Dracula v1.1.1
 Release: 2026-08-17
 ============================================================

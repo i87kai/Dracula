@@ -5,6 +5,8 @@
 #include "cli/ui.h"
 #include "common/version.h"
 #include "common/paths.h"
+#include "common/input_validator.h"
+#include "common/format.h"
 #include "host/report_writer.h"
 #include "mcp/mcp_server.h"
 #include "core/pe_inspector.h"
@@ -30,7 +32,8 @@ namespace Dracula {
     namespace {
 
         void StripQuotes(std::string& s) {
-            if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+            if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') ||
+                                  (s.front() == '\'' && s.back() == '\''))) {
                 s = s.substr(1, s.size() - 2);
             }
         }
@@ -57,9 +60,7 @@ namespace Dracula {
         }
 
         std::string Hex(uint64_t v) {
-            std::ostringstream ss;
-            ss << "0x" << std::hex << v;
-            return ss.str();
+            return Format::Hex(v);
         }
 
         std::string Fixed(double v, int precision = 2) {
@@ -273,7 +274,6 @@ namespace Dracula {
         if (args.size() > index && !args[index].empty() && args[index].rfind("--", 0) != 0) {
             std::string path = args[index];
             StripQuotes(path);
-            m_activeFile = path;
             return path;
         }
         return m_activeFile;
@@ -445,14 +445,27 @@ namespace Dracula {
             return;
         }
 
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
+            return;
+        }
+
         Ui::Info("Running the Dracula pipeline on " + file);
 
         OrchestratorOptions opts;
         opts.enableEmulation = true;
         auto res = m_orchestrator.AnalyzeFile(file, opts);
 
-        m_sessionResult = std::make_unique<UnifiedAnalysisResult>(res);
-        std::cout << res.ToAnsiSummary();
+        if (res.threatLevel == "N/A" || (!res.threatReasoning.empty() && res.threatReasoning[0].rfind("PE Parser Error:", 0) == 0)) {
+            std::string reason = res.threatReasoning.empty() ? "Failed to parse PE binary." : res.threatReasoning[0];
+            Ui::Error(reason);
+            return;
+        }
+
+        m_activeFile = file;
+        m_sessionResult = std::make_unique<UnifiedAnalysisResult>(std::move(res));
+        std::cout << m_sessionResult->ToAnsiSummary();
         Ui::Success("Active sample set to " + file);
     }
 
@@ -460,6 +473,12 @@ namespace Dracula {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
             ReportMissingTarget("emulate");
+            return;
+        }
+
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
             return;
         }
 
@@ -521,9 +540,31 @@ namespace Dracula {
     }
 
     void DraculaShell::HandleDisasm(const std::vector<std::string>& args) {
-        std::string file = ResolveTargetFile(args, 0);
+        std::string file;
+        std::string rvaStr;
+        std::string countStr;
+
+        if (args.empty()) {
+            file = m_activeFile;
+        } else if (args[0].rfind("0x", 0) == 0 || (args[0].size() > 0 && std::isdigit(static_cast<unsigned char>(args[0][0])) && !m_activeFile.empty() && !std::filesystem::exists(args[0]))) {
+            file = m_activeFile;
+            rvaStr = args[0];
+            if (args.size() > 1) countStr = args[1];
+        } else {
+            file = args[0];
+            StripQuotes(file);
+            if (args.size() > 1) rvaStr = args[1];
+            if (args.size() > 2) countStr = args[2];
+        }
+
         if (file.empty()) {
             ReportMissingTarget("disasm");
+            return;
+        }
+
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
             return;
         }
 
@@ -535,21 +576,25 @@ namespace Dracula {
         }
 
         uint64_t targetRva = inspector.GetMetadata().entryPointRva;
-        if (args.size() > 1) {
-            try { targetRva = std::stoull(args[1], nullptr, 0); } catch (...) {}
+        if (!rvaStr.empty()) {
+            try { targetRva = std::stoull(rvaStr, nullptr, 0); } catch (...) {
+                Ui::Error("Error: Invalid RVA format: " + rvaStr);
+                return;
+            }
         }
 
         size_t count = 30;
-        if (args.size() > 2) {
-            try { count = std::stoul(args[2]); } catch (...) {}
+        if (!countStr.empty()) {
+            try { count = std::stoul(countStr); } catch (...) {}
         }
 
-        uint64_t fileOffset = inspector.RvaToFileOffset(targetRva);
-        if (fileOffset >= inspector.GetBufferSize()) {
-            Ui::Error("Invalid RVA " + Hex(targetRva) + " for this image.");
+        auto optOffset = inspector.RvaToFileOffset(targetRva);
+        if (!optOffset.has_value() || *optOffset >= inspector.GetBufferSize()) {
+            Ui::Error("Error: RVA " + Format::Hex(targetRva) + " is outside the mapped PE image.");
             return;
         }
 
+        uint64_t fileOffset = *optOffset;
         Disassembler disasm(inspector.GetMetadata().is64Bit ? Architecture::X86_64 : Architecture::X86_32);
         size_t codeSize = std::min<size_t>(count * 15, inspector.GetBufferSize() - fileOffset);
         auto instructions = disasm.Disassemble(inspector.GetBuffer() + fileOffset, codeSize,
@@ -569,9 +614,28 @@ namespace Dracula {
     }
 
     void DraculaShell::HandleCfg(const std::vector<std::string>& args) {
-        std::string file = ResolveTargetFile(args, 0);
+        std::string file;
+        std::string rvaStr;
+
+        if (args.empty()) {
+            file = m_activeFile;
+        } else if (args[0].rfind("0x", 0) == 0 || (args[0].size() > 0 && std::isdigit(static_cast<unsigned char>(args[0][0])) && !m_activeFile.empty() && !std::filesystem::exists(args[0]))) {
+            file = m_activeFile;
+            rvaStr = args[0];
+        } else {
+            file = args[0];
+            StripQuotes(file);
+            if (args.size() > 1) rvaStr = args[1];
+        }
+
         if (file.empty()) {
             ReportMissingTarget("cfg");
+            return;
+        }
+
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
             return;
         }
 
@@ -583,16 +647,20 @@ namespace Dracula {
         }
 
         uint64_t targetRva = inspector.GetMetadata().entryPointRva;
-        if (args.size() > 1) {
-            try { targetRva = std::stoull(args[1], nullptr, 0); } catch (...) {}
+        if (!rvaStr.empty()) {
+            try { targetRva = std::stoull(rvaStr, nullptr, 0); } catch (...) {
+                Ui::Error("Error: Invalid RVA format: " + rvaStr);
+                return;
+            }
         }
 
-        uint64_t fileOffset = inspector.RvaToFileOffset(targetRva);
-        if (fileOffset >= inspector.GetBufferSize()) {
-            Ui::Error("Invalid RVA " + Hex(targetRva) + " for this image.");
+        auto optOffset = inspector.RvaToFileOffset(targetRva);
+        if (!optOffset.has_value() || *optOffset >= inspector.GetBufferSize()) {
+            Ui::Error("Error: RVA " + Format::Hex(targetRva) + " is outside the mapped PE image.");
             return;
         }
 
+        uint64_t fileOffset = *optOffset;
         CfgAnalyzer cfg;
         Architecture arch = inspector.GetMetadata().is64Bit ? Architecture::X86_64 : Architecture::X86_32;
         size_t codeSize = std::min<size_t>(0x2000, inspector.GetBufferSize() - fileOffset);
@@ -610,6 +678,12 @@ namespace Dracula {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
             ReportMissingTarget("headers");
+            return;
+        }
+
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
             return;
         }
 
@@ -658,6 +732,12 @@ namespace Dracula {
             return;
         }
 
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
+            return;
+        }
+
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
@@ -690,6 +770,12 @@ namespace Dracula {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
             ReportMissingTarget("imports");
+            return;
+        }
+
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
             return;
         }
 
@@ -728,6 +814,12 @@ namespace Dracula {
             return;
         }
 
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
+            return;
+        }
+
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
@@ -763,6 +855,12 @@ namespace Dracula {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
             ReportMissingTarget("strings");
+            return;
+        }
+
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
             return;
         }
 
@@ -822,6 +920,12 @@ namespace Dracula {
             return;
         }
 
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
+            return;
+        }
+
         auto info = EntropyAnalyzer::AnalyzeBinary(file);
         Ui::Section("Entropy", "Shannon, 0.00 - 8.00");
         Ui::KeyValue("Overall entropy", Fixed(info.overallEntropy) + " / 8.00");
@@ -852,11 +956,6 @@ namespace Dracula {
     void DraculaShell::HandleScan(const std::vector<std::string>& args) {
         const auto* def = Cmd("scan");
 
-        std::string file;
-        std::string pattern;
-
-        // Accept: /scan <pattern>            (active sample)
-        //         /scan <file> <pattern>
         if (args.empty()) {
             if (def) {
                 Ui::MissingArgument(*def, "Missing hex pattern.");
@@ -864,26 +963,79 @@ namespace Dracula {
             return;
         }
 
-        if (args.size() == 1) {
-            file = m_activeFile;
-            pattern = args[0];
-            if (file.empty()) {
+        std::string file;
+        std::string pattern;
+
+        if (!m_activeFile.empty()) {
+            // Test if all tokens joined form a strictly valid hex pattern
+            std::string allTokens;
+            for (size_t i = 0; i < args.size(); ++i) {
+                if (i > 0) allTokens += " ";
+                allTokens += args[i];
+            }
+            StripQuotes(allTokens);
+
+            auto testParse = PatternScanner::ParsePatternStrict(allTokens);
+            if (testParse.IsValid()) {
+                file = m_activeFile;
+                pattern = allTokens;
+            } else if (args.size() >= 2) {
+                file = args[0];
+                StripQuotes(file);
+                for (size_t i = 1; i < args.size(); ++i) {
+                    if (i > 1) pattern += " ";
+                    pattern += args[i];
+                }
+                StripQuotes(pattern);
+            } else {
+                auto fileVal = InputValidator::ValidateFile(args[0]);
+                if (fileVal.IsValid()) {
+                    if (def) {
+                        Ui::MissingArgument(*def, "Missing hex pattern.");
+                    }
+                    return;
+                } else {
+                    file = m_activeFile;
+                    pattern = args[0];
+                    StripQuotes(pattern);
+                }
+            }
+        } else {
+            if (args.size() < 2) {
                 if (def) {
                     Ui::MissingArgument(*def,
                         "No active sample, so both a file and a pattern are required.");
                 }
                 return;
             }
-        } else {
             file = args[0];
             StripQuotes(file);
-            pattern = args[1];
-            for (size_t i = 2; i < args.size(); ++i) pattern += " " + args[i];
-            m_activeFile = file;
+            for (size_t i = 1; i < args.size(); ++i) {
+                if (i > 1) pattern += " ";
+                pattern += args[i];
+            }
+            StripQuotes(pattern);
         }
-        StripQuotes(pattern);
 
-        auto matches = PatternScanner::ScanFile(file, pattern);
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
+            return;
+        }
+
+        auto parseRes = PatternScanner::ParsePatternStrict(pattern);
+        if (!parseRes.IsValid()) {
+            Ui::Error("Error: " + parseRes.errorMessage);
+            return;
+        }
+
+        std::string scanErr;
+        auto matches = PatternScanner::ScanFile(file, parseRes.pattern, &scanErr);
+        if (!scanErr.empty()) {
+            Ui::Error(scanErr);
+            return;
+        }
+
         Ui::Section("Pattern Scan", Ui::Number(matches.size()) + " matches");
         Ui::KeyValue("Pattern", pattern);
         Ui::KeyValue("File", file);
@@ -899,7 +1051,7 @@ namespace Dracula {
         size_t shown = std::min(kLimit, matches.size());
         for (size_t i = 0; i < shown; ++i) {
             std::cout << "  " << C(ColorRole::Muted) << "file offset  " << R()
-                      << C(ColorRole::Technical) << Hex(matches[i]) << R() << "\n";
+                      << C(ColorRole::Technical) << Format::Hex(matches[i]) << R() << "\n";
         }
         Ui::Truncated(shown, matches.size(), "matches");
         std::cout << "\n";
@@ -912,6 +1064,12 @@ namespace Dracula {
             return;
         }
 
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
+            return;
+        }
+
         Ui::Info("Launching the QEMU hardware sandbox for " + file);
         auto res = m_orchestrator.RunDynamicSandbox(file, 60);
         m_sessionResult = std::make_unique<UnifiedAnalysisResult>(res);
@@ -919,12 +1077,7 @@ namespace Dracula {
     }
 
     void DraculaShell::HandleAntiEvasion(const std::vector<std::string>& args) {
-        std::string file = ResolveTargetFile(args, 0);
-        if (file.empty()) {
-            ReportMissingTarget("antievasion");
-            return;
-        }
-
+        std::string file;
         AntiEvasionOptions opts;
         bool profileGiven = false;
 
@@ -938,17 +1091,49 @@ namespace Dracula {
                 opts.detailed = true;
             } else if (a == "--no-emulation") {
                 opts.useEmulation = false;
-            } else if (a == "--profile" && i + 1 < args.size()) {
-                ProfileKind kind;
-                if (ParseProfileKind(args[i + 1], kind)) {
-                    opts.detectionProfile = kind;
-                    profileGiven = true;
+            } else if (a == "--profile") {
+                if (i + 1 < args.size()) {
+                    ProfileKind kind;
+                    if (ParseProfileKind(args[i + 1], kind)) {
+                        opts.detectionProfile = kind;
+                        profileGiven = true;
+                        ++i;
+                    } else {
+                        Ui::Error("Error: Unknown profile '" + args[i + 1] +
+                                  "'. Valid: baseline, realistic, analysis-friendly.");
+                        return;
+                    }
                 } else {
-                    Ui::Warning("Unknown profile '" + args[i + 1] +
-                                "'. Valid: baseline, realistic, analysis-friendly.");
+                    Ui::Error("Error: Missing profile name after --profile.");
+                    return;
+                }
+            } else if (a.rfind("--", 0) == 0) {
+                Ui::Error("Error: Unknown option '" + a + "'.");
+                return;
+            } else {
+                if (file.empty()) {
+                    file = a;
+                    StripQuotes(file);
+                } else {
+                    Ui::Error("Error: Multiple target files specified ('" + file + "' and '" + a + "').");
                     return;
                 }
             }
+        }
+
+        if (file.empty()) {
+            file = m_activeFile;
+        }
+
+        if (file.empty()) {
+            ReportMissingTarget("antievasion");
+            return;
+        }
+
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
+            return;
         }
 
         if (profileGiven && opts.runComparison) {
@@ -1025,6 +1210,12 @@ namespace Dracula {
             return;
         }
 
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
+            return;
+        }
+
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
@@ -1054,6 +1245,12 @@ namespace Dracula {
             return;
         }
 
+        auto val = InputValidator::ValidateFile(file);
+        if (!val.IsValid()) {
+            Ui::Error(val.errorMessage);
+            return;
+        }
+
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
@@ -1066,9 +1263,10 @@ namespace Dracula {
             try { epRva = std::stoull(args[1], nullptr, 0); } catch (...) {}
         }
 
-        uint64_t epOffset = inspector.RvaToFileOffset(epRva);
+        auto optOffset = inspector.RvaToFileOffset(epRva);
         std::vector<XRefEntry> xrefs;
-        if (epOffset < inspector.GetBufferSize()) {
+        if (optOffset.has_value() && *optOffset < inspector.GetBufferSize()) {
+            uint64_t epOffset = *optOffset;
             size_t epCodeSize = std::min<size_t>(0x2000, inspector.GetBufferSize() - epOffset);
             Architecture arch = inspector.GetMetadata().is64Bit ? Architecture::X86_64 : Architecture::X86_32;
             uint64_t epVa = inspector.GetMetadata().imageBase + epRva;
@@ -1297,6 +1495,7 @@ namespace Dracula {
         }
 
         TerminalGuard termGuard;
+        Ui::ResetError();
 
         for (int i = 1; i < argc; ++i) {
             std::string arg = argv[i];
@@ -1312,19 +1511,32 @@ namespace Dracula {
             return RunInteractive();
         }
 
-        std::string arg1 = argv[1];
+        // Filter out formatting flags
+        std::vector<std::string> rawArgs;
+        for (int i = 1; i < argc; ++i) {
+            std::string a = argv[i];
+            if (a != "--no-color" && a != "--no-unicode") {
+                rawArgs.push_back(a);
+            }
+        }
 
-        if (arg1 == "--help" || arg1 == "-h") {
+        if (rawArgs.empty()) {
+            return RunInteractive();
+        }
+
+        std::string first = rawArgs[0];
+
+        if (first == "--help" || first == "-h") {
             PrintHelp("");
             return 0;
         }
 
-        if (arg1 == "--version" || arg1 == "-v") {
+        if (first == "--version" || first == "-v") {
             PrintVersion();
             return 0;
         }
 
-        if (arg1 == "--changelog") {
+        if (first == "--changelog") {
             HandleChangelog({});
             return 0;
         }
@@ -1332,45 +1544,46 @@ namespace Dracula {
         std::string command;
         std::vector<std::string> cmdArgs;
 
-        if (arg1 == "--analyze" || arg1 == "-a") command = "analyze";
-        else if (arg1 == "--emulate" || arg1 == "-e") command = "emulate";
-        else if (arg1 == "--disasm" || arg1 == "-d") command = "disasm";
-        else if (arg1 == "--cfg") command = "cfg";
-        else if (arg1 == "--headers") command = "headers";
-        else if (arg1 == "--security") command = "security";
-        else if (arg1 == "--imports") command = "imports";
-        else if (arg1 == "--exports") command = "exports";
-        else if (arg1 == "--strings") command = "strings";
-        else if (arg1 == "--entropy") command = "entropy";
-        else if (arg1 == "--sandbox") command = "sandbox";
-        else if (arg1 == "--anti-evasion" || arg1 == "--antievasion" ||
-                 arg1 == "--antivm" || arg1 == "--evasion") command = "antievasion";
-        else if (arg1 == "--scan") command = "scan";
-        else if (arg1 == "--functions") command = "functions";
-        else if (arg1 == "--xrefs") command = "xrefs";
-        else if (arg1 == "--findings") command = "findings";
-        else if (arg1 == "--report") command = "report";
-        else if (arg1 == "--session") command = "session";
-        else if (arg1 == "--no-color" || arg1 == "--no-unicode") {
-            if (argc == 2) return RunInteractive();
-            return 0;
-        } else {
+        if (first == "--analyze" || first == "-a") command = "analyze";
+        else if (first == "--emulate" || first == "-e") command = "emulate";
+        else if (first == "--disasm" || first == "-d") command = "disasm";
+        else if (first == "--cfg") command = "cfg";
+        else if (first == "--headers") command = "headers";
+        else if (first == "--security") command = "security";
+        else if (first == "--imports") command = "imports";
+        else if (first == "--exports") command = "exports";
+        else if (first == "--strings") command = "strings";
+        else if (first == "--entropy") command = "entropy";
+        else if (first == "--sandbox") command = "sandbox";
+        else if (first == "--anti-evasion" || first == "--antievasion" ||
+                 first == "--antivm" || first == "--evasion") command = "antievasion";
+        else if (first == "--scan") command = "scan";
+        else if (first == "--functions") command = "functions";
+        else if (first == "--xrefs") command = "xrefs";
+        else if (first == "--findings") command = "findings";
+        else if (first == "--report") command = "report";
+        else if (first == "--session") command = "session";
+        else {
             command = "analyze";
-            cmdArgs.push_back(arg1);
+            cmdArgs.push_back(first);
         }
 
-        for (int i = 2; i < argc; ++i) {
-            std::string a = argv[i];
-            if (a != "--no-color" && a != "--no-unicode") {
-                cmdArgs.push_back(a);
-            }
+        for (size_t i = 1; i < rawArgs.size(); ++i) {
+            cmdArgs.push_back(rawArgs[i]);
         }
 
         std::string cmdLine = "/" + command;
         for (const auto& a : cmdArgs) cmdLine += " \"" + a + "\"";
 
-        ExecuteCommand(cmdLine);
-        return 0;
+        try {
+            ExecuteCommand(cmdLine);
+        } catch (const std::exception& ex) {
+            Ui::Error(std::string("Fatal error: ") + ex.what());
+        } catch (...) {
+            Ui::Error("Fatal unexpected error occurred.");
+        }
+
+        return Ui::HasError() ? 1 : 0;
     }
 
 } // namespace Dracula

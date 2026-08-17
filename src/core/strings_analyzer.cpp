@@ -1,4 +1,5 @@
 #include "core/strings_analyzer.h"
+#include "common/format.h"
 #include <cctype>
 #include <algorithm>
 #include <regex>
@@ -148,7 +149,7 @@ namespace Dracula {
                 f.confidence = FindingConfidence::High;
                 f.title = "Embedded URL Detected: " + s.value;
                 f.description = "Extracted hardcoded URL indicator from binary string tables.";
-                f.evidence = s.value + " (offset: 0x" + std::to_string(s.fileOffset) + ")";
+                f.evidence = s.value + " (offset: " + Format::Hex(s.fileOffset) + ")";
                 f.source = "Strings Analyzer";
                 f.tags = {"URL", "C2", "MITRE:T1071"};
                 out.push_back(f);

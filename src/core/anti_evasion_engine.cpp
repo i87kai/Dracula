@@ -239,8 +239,9 @@ namespace Dracula {
         Disassembler disasm(arch);
         for (const auto& section : inspector.GetSections()) {
             if (!section.isExecutable) continue;
-            const uint64_t offset = inspector.RvaToFileOffset(section.virtualAddress);
-            if (offset >= inspector.GetBufferSize()) continue;
+            const auto optOffset = inspector.RvaToFileOffset(section.virtualAddress);
+            if (!optOffset.has_value() || *optOffset >= inspector.GetBufferSize()) continue;
+            const uint64_t offset = *optOffset;
 
             size_t size = std::min<size_t>(section.rawSize, inspector.GetBufferSize() - offset);
             size = std::min<size_t>(size, 2 * 1024 * 1024);   // bounded sweep

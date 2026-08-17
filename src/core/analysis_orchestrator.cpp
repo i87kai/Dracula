@@ -1,6 +1,7 @@
 #include "core/analysis_orchestrator.h"
 #include "core/dynamic_vm_analyzer.h"
 #include "common/config.h"
+#include "common/input_validator.h"
 #include "core/xref_analyzer.h"
 #include <chrono>
 #include <ctime>
@@ -32,31 +33,41 @@ namespace Dracula {
         UnifiedAnalysisResult res;
         res.timestampIso = GetCurrentIsoTimestamp();
 
+        // Target Validation Precondition
+        auto val = InputValidator::ValidateFile(filePath);
+        if (!val.IsValid()) {
+            res.sample.filePath = filePath;
+            try {
+                res.sample.fileName = std::filesystem::path(filePath).filename().string();
+            } catch (...) {
+                res.sample.fileName = filePath;
+            }
+            res.sample.fileSize = 0;
+            res.threatScore = 0;
+            res.threatLevel = "N/A";
+            res.threatReasoning = { val.errorMessage };
+            auto end = std::chrono::steady_clock::now();
+            res.analysisDurationMs = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            return res;
+        }
+
         // 1. Safe PE Parsing & Hashes
         PeInspector inspector;
         std::string peErr;
         if (!inspector.LoadFromFile(filePath, peErr)) {
             res.sample.filePath = filePath;
-            res.sample.fileName = std::filesystem::path(filePath).filename().string();
-            res.sample.fileSize = std::filesystem::exists(filePath) ? std::filesystem::file_size(filePath) : 0;
-
-            Finding f;
-            f.id = "PARSE_ERROR";
-            f.category = "Error";
-            f.severity = FindingSeverity::High;
-            f.confidence = FindingConfidence::High;
-            f.title = "PE Parser Error: " + peErr;
-            f.description = "Failed to parse binary as standard PE format.";
-            f.evidence = peErr;
-            f.source = "PE Inspector";
-            res.findings.push_back(f);
+            try {
+                res.sample.fileName = std::filesystem::path(filePath).filename().string();
+            } catch (...) {
+                res.sample.fileName = filePath;
+            }
+            res.sample.fileSize = val.fileSize;
+            res.threatScore = 0;
+            res.threatLevel = "N/A";
+            res.threatReasoning = { "PE Parser Error: " + peErr };
 
             auto end = std::chrono::steady_clock::now();
             res.analysisDurationMs = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-            auto threat = ThreatEvaluator::Evaluate(res.findings, res.sample, res.mitigations, res.overallEntropy, res.isPacked);
-            res.threatScore = threat.score;
-            res.threatLevel = threat.level;
-            res.threatReasoning = threat.reasoning;
             return res;
         }
 
@@ -112,8 +123,9 @@ namespace Dracula {
 
         // 5. Disassembly & Control Flow Graph around Entry Point
         if (res.sample.entryPointRva != 0) {
-            uint64_t epOffset = inspector.RvaToFileOffset(res.sample.entryPointRva);
-            if (epOffset < inspector.GetBufferSize()) {
+            auto optEpOffset = inspector.RvaToFileOffset(res.sample.entryPointRva);
+            if (optEpOffset.has_value() && *optEpOffset < inspector.GetBufferSize()) {
+                uint64_t epOffset = *optEpOffset;
                 size_t epCodeSize = std::min<size_t>(0x2000, inspector.GetBufferSize() - epOffset);
                 CfgAnalyzer cfgAnalyzer;
                 Architecture arch = res.sample.is64Bit ? Architecture::X86_64 : Architecture::X86_32;

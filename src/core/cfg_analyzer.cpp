@@ -1,4 +1,5 @@
 #include "core/cfg_analyzer.h"
+#include "common/format.h"
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
@@ -18,7 +19,7 @@ namespace Dracula {
         size_t maxInstructions
     ) {
         FunctionGraph graph;
-        graph.name = "sub_" + std::to_string(funcRva);
+        graph.name = Format::FunctionName(funcRva);
         graph.entryAddress = funcAddress;
         graph.entryRva = funcRva;
 

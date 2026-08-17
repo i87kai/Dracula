@@ -1,4 +1,5 @@
 #include "core/xref_analyzer.h"
+#include "common/format.h"
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
@@ -73,9 +74,7 @@ namespace Dracula {
             // 3. Check instruction type
             if (inst.isCall) {
                 xr.type = XRefType::CodeCall;
-                std::ostringstream ss;
-                ss << "sub_" << std::hex << targetRva;
-                xr.targetName = ss.str();
+                xr.targetName = Format::FunctionName(targetRva);
                 xrefs.push_back(xr);
             } else if (inst.isBranch) {
                 xr.type = XRefType::CodeJump;
@@ -88,7 +87,7 @@ namespace Dracula {
                 for (const auto& sec : sections) {
                     if (targetRva >= sec.virtualAddress && targetRva < sec.virtualAddress + sec.virtualSize) {
                         xr.type = XRefType::DataRef;
-                        xr.targetName = sec.name + " + 0x" + std::to_string(targetRva - sec.virtualAddress);
+                        xr.targetName = sec.name + " + " + Format::Hex(targetRva - sec.virtualAddress);
                         xrefs.push_back(xr);
                         break;
                     }

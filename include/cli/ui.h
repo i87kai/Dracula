@@ -29,6 +29,11 @@ namespace Dracula {
         void Info(const std::string& message);
         void Note(const std::string& message);
 
+        // Error state tracking for CLI return codes
+        bool HasError();
+        void ResetError();
+        void SetError();
+
         // ─── Structure ──────────────────────────────────────────────────────
 
         // A titled section: the title in the Dracula accent above a hairline

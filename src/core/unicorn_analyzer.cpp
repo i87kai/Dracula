@@ -1,7 +1,7 @@
 #include "core/unicorn_analyzer.h"
 #include "core/pe_inspector.h"
 #include "core/disassembler.h"
-
+#include "common/format.h"
 #include <capstone/capstone.h>
 
 #include <iostream>
@@ -649,7 +649,7 @@ namespace Dracula {
     bool UnicornAnalyzer::HookMemUnmappedCallback(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data) {
         auto* self = static_cast<UnicornAnalyzer*>(user_data);
         if (self->m_emuOptions.strictSandbox) {
-            self->EmitEvent(Sandbox::EventType::Error, "UnmappedMemory", "Strict Sandbox: Fault at unmapped address", "0x" + std::to_string(address));
+            self->EmitEvent(Sandbox::EventType::Error, "UnmappedMemory", "Strict Sandbox: Fault at unmapped address", Format::Hex(address));
             return false;
         }
 
@@ -1112,7 +1112,7 @@ namespace Dracula {
         Sandbox::TraceEvent e;
         e.type = Sandbox::EventType::Info;
         e.category = "UnicornEmulateBuffer";
-        e.message = "EmulateBuffer completed at base 0x" + std::to_string(baseAddress);
+        e.message = "EmulateBuffer completed at base " + Format::Hex(baseAddress);
         m_report.events.push_back(e);
 
         return out;

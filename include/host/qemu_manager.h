@@ -52,6 +52,7 @@ namespace Sandbox {
         const std::string& LastError() const { return m_lastError; }
 
         const QemuConfig& GetConfig() const { return m_config; }
+        void SetGuestShareDir(const std::string& dir) { m_config.guestShareDir = dir; }
 
     private:
         void DrainDiagnostics();

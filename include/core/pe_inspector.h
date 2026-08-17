@@ -5,6 +5,7 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace Dracula {
 
@@ -31,8 +32,8 @@ namespace Dracula {
         size_t GetBufferSize() const { return m_rawBuffer.size(); }
 
         // Address resolution helpers
-        uint64_t RvaToFileOffset(uint64_t rva) const;
-        uint64_t FileOffsetToRva(uint64_t offset) const;
+        std::optional<uint64_t> RvaToFileOffset(uint64_t rva) const;
+        std::optional<uint64_t> FileOffsetToRva(uint64_t offset) const;
         const SectionInfo* GetSectionForRva(uint64_t rva) const;
 
         // Structured findings generation

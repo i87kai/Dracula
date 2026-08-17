@@ -1,4 +1,6 @@
 #include "core/pe_inspector.h"
+#include "common/input_validator.h"
+#include "common/format.h"
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -79,21 +81,20 @@ namespace Dracula {
     }
 
     bool PeInspector::LoadFromFile(const std::string& filePath, std::string& outError) {
-        std::ifstream file(filePath, std::ios::binary | std::ios::ate);
+        auto val = InputValidator::ValidateFile(filePath);
+        if (!val.IsValid()) {
+            outError = val.errorMessage;
+            return false;
+        }
+
+        std::ifstream file(filePath, std::ios::binary);
         if (!file.is_open()) {
             outError = "Failed to open file: " + filePath;
             return false;
         }
 
-        std::streamsize size = file.tellg();
-        if (size <= 0) {
-            outError = "File is empty: " + filePath;
-            return false;
-        }
-
-        file.seekg(0, std::ios::beg);
-        m_rawBuffer.resize(static_cast<size_t>(size));
-        if (!file.read(reinterpret_cast<char*>(m_rawBuffer.data()), size)) {
+        m_rawBuffer.resize(static_cast<size_t>(val.fileSize));
+        if (!file.read(reinterpret_cast<char*>(m_rawBuffer.data()), static_cast<std::streamsize>(val.fileSize))) {
             outError = "Failed to read file contents: " + filePath;
             return false;
         }
@@ -101,7 +102,7 @@ namespace Dracula {
         m_metadata.filePath = filePath;
         size_t lastSlash = filePath.find_last_of("/\\");
         m_metadata.fileName = (lastSlash != std::string::npos) ? filePath.substr(lastSlash + 1) : filePath;
-        m_metadata.fileSize = static_cast<uint64_t>(size);
+        m_metadata.fileSize = val.fileSize;
 
         return ParsePE(outError);
     }
@@ -185,7 +186,7 @@ namespace Dracula {
             m_metadata.architecture = "ARM64";
             m_metadata.is64Bit = true;
         } else {
-            m_metadata.architecture = "Unknown (0x" + std::to_string(fileHeader.Machine) + ")";
+            m_metadata.architecture = "Unknown (" + Format::Hex(fileHeader.Machine) + ")";
         }
 
         // 4. Parse Optional Header (32 vs 64 bit)
@@ -240,7 +241,7 @@ namespace Dracula {
                 default:                          m_metadata.subsystem = "Other (" + std::to_string(opt32.Subsystem) + ")"; break;
             }
         } else {
-            outError = "Unsupported Optional Header Magic: 0x" + std::to_string(optMagic);
+            outError = "Unsupported Optional Header Magic: " + Format::Hex(optMagic);
             return false;
         }
 
@@ -373,22 +374,27 @@ namespace Dracula {
         }
     }
 
-    uint64_t PeInspector::RvaToFileOffset(uint64_t rva) const {
+    std::optional<uint64_t> PeInspector::RvaToFileOffset(uint64_t rva) const {
         for (const auto& s : m_sections) {
-            if (rva >= s.virtualAddress && rva < s.virtualAddress + std::max(s.virtualSize, s.rawSize)) {
-                return s.rawAddress + (rva - s.virtualAddress);
+            if (s.rawSize > 0 && rva >= s.virtualAddress && rva < s.virtualAddress + s.rawSize) {
+                uint64_t delta = rva - s.virtualAddress;
+                uint64_t offset = static_cast<uint64_t>(s.rawAddress) + delta;
+                if (offset < m_rawBuffer.size()) {
+                    return offset;
+                }
             }
         }
-        return 0;
+        return std::nullopt;
     }
 
-    uint64_t PeInspector::FileOffsetToRva(uint64_t offset) const {
+    std::optional<uint64_t> PeInspector::FileOffsetToRva(uint64_t offset) const {
         for (const auto& s : m_sections) {
-            if (offset >= s.rawAddress && offset < s.rawAddress + s.rawSize) {
-                return s.virtualAddress + (offset - s.rawAddress);
+            if (s.rawSize > 0 && offset >= s.rawAddress && offset < s.rawAddress + s.rawSize) {
+                uint64_t delta = offset - s.rawAddress;
+                return s.virtualAddress + delta;
             }
         }
-        return 0;
+        return std::nullopt;
     }
 
     const SectionInfo* PeInspector::GetSectionForRva(uint64_t rva) const {
@@ -401,8 +407,9 @@ namespace Dracula {
     }
 
     void PeInspector::ParseImports(uint32_t importRva, uint32_t importSize) {
-        uint64_t descOffset = RvaToFileOffset(importRva);
-        if (descOffset == 0) return;
+        auto optDesc = RvaToFileOffset(importRva);
+        if (!optDesc.has_value()) return;
+        uint64_t descOffset = *optDesc;
 
         // Dangerous APIs dictionary
         static const std::map<std::string, std::pair<std::string, std::string>> kDangerousApis = {
@@ -433,15 +440,16 @@ namespace Dracula {
             if (!SafeRead(descOffset, &desc, sizeof(desc))) break;
             if (desc.Characteristics == 0 && desc.Name == 0 && desc.FirstThunk == 0) break; // Null terminator
 
-            uint64_t nameOffset = RvaToFileOffset(desc.Name);
-            std::string dllName = SafeReadString(nameOffset, 64);
+            auto optName = RvaToFileOffset(desc.Name);
+            std::string dllName = optName.has_value() ? SafeReadString(*optName, 64) : "UNKNOWN.DLL";
             if (dllName.empty()) dllName = "UNKNOWN.DLL";
 
             uint32_t thunkRva = desc.OriginalFirstThunk ? desc.OriginalFirstThunk : desc.FirstThunk;
-            uint64_t thunkOffset = RvaToFileOffset(thunkRva);
+            auto optThunk = RvaToFileOffset(thunkRva);
             uint64_t iatRva = desc.FirstThunk;
 
-            if (thunkOffset != 0) {
+            if (optThunk.has_value()) {
+                uint64_t thunkOffset = *optThunk;
                 while (true) {
                     if (m_metadata.is64Bit) {
                         uint64_t thunkValue = 0;
@@ -455,10 +463,12 @@ namespace Dracula {
                             imp.ordinal = static_cast<uint32_t>(thunkValue & 0xFFFF);
                             imp.functionName = "Ordinal_" + std::to_string(imp.ordinal);
                         } else {
-                            uint64_t ibnOffset = RvaToFileOffset(thunkValue);
-                            WORD hint = 0;
-                            SafeRead(ibnOffset, &hint, sizeof(hint));
-                            imp.functionName = SafeReadString(ibnOffset + 2, 128);
+                            auto optIbn = RvaToFileOffset(thunkValue);
+                            if (optIbn.has_value()) {
+                                WORD hint = 0;
+                                SafeRead(*optIbn, &hint, sizeof(hint));
+                                imp.functionName = SafeReadString(*optIbn + 2, 128);
+                            }
                         }
 
                         auto it = kDangerousApis.find(imp.functionName);
@@ -482,10 +492,12 @@ namespace Dracula {
                             imp.ordinal = thunkValue & 0xFFFF;
                             imp.functionName = "Ordinal_" + std::to_string(imp.ordinal);
                         } else {
-                            uint64_t ibnOffset = RvaToFileOffset(thunkValue);
-                            WORD hint = 0;
-                            SafeRead(ibnOffset, &hint, sizeof(hint));
-                            imp.functionName = SafeReadString(ibnOffset + 2, 128);
+                            auto optIbn = RvaToFileOffset(thunkValue);
+                            if (optIbn.has_value()) {
+                                WORD hint = 0;
+                                SafeRead(*optIbn, &hint, sizeof(hint));
+                                imp.functionName = SafeReadString(*optIbn + 2, 128);
+                            }
                         }
 
                         auto it = kDangerousApis.find(imp.functionName);
@@ -506,15 +518,21 @@ namespace Dracula {
     }
 
     void PeInspector::ParseExports(uint32_t exportRva, uint32_t exportSize) {
-        uint64_t expOffset = RvaToFileOffset(exportRva);
-        if (expOffset == 0) return;
+        auto optExp = RvaToFileOffset(exportRva);
+        if (!optExp.has_value()) return;
+        uint64_t expOffset = *optExp;
 
         IMAGE_EXPORT_DIRECTORY exp;
         if (!SafeRead(expOffset, &exp, sizeof(exp))) return;
 
-        uint64_t funcTableOffset = RvaToFileOffset(exp.AddressOfFunctions);
-        uint64_t nameTableOffset = RvaToFileOffset(exp.AddressOfNames);
-        uint64_t ordTableOffset = RvaToFileOffset(exp.AddressOfNameOrdinals);
+        auto optFuncTable = RvaToFileOffset(exp.AddressOfFunctions);
+        auto optNameTable = RvaToFileOffset(exp.AddressOfNames);
+        auto optOrdTable = RvaToFileOffset(exp.AddressOfNameOrdinals);
+        if (!optFuncTable.has_value() || !optNameTable.has_value() || !optOrdTable.has_value()) return;
+
+        uint64_t funcTableOffset = *optFuncTable;
+        uint64_t nameTableOffset = *optNameTable;
+        uint64_t ordTableOffset = *optOrdTable;
 
         for (DWORD i = 0; i < exp.NumberOfNames; ++i) {
             uint32_t nameRva = 0;
@@ -526,13 +544,15 @@ namespace Dracula {
             SafeRead(funcTableOffset + (ordIndex * sizeof(uint32_t)), &funcRva, sizeof(funcRva));
 
             ExportEntry ee;
-            ee.functionName = SafeReadString(RvaToFileOffset(nameRva), 128);
+            auto optNameStr = RvaToFileOffset(nameRva);
+            ee.functionName = optNameStr.has_value() ? SafeReadString(*optNameStr, 128) : "";
             ee.ordinal = exp.Base + ordIndex;
             ee.rva = funcRva;
 
             // Check if forwarded export (RVA inside export directory)
             if (funcRva >= exportRva && funcRva < exportRva + exportSize) {
-                ee.forwarderName = SafeReadString(RvaToFileOffset(funcRva), 128);
+                auto optFwd = RvaToFileOffset(funcRva);
+                ee.forwarderName = optFwd.has_value() ? SafeReadString(*optFwd, 128) : "";
             }
 
             m_exports.push_back(ee);
@@ -540,16 +560,18 @@ namespace Dracula {
     }
 
     void PeInspector::ParseTls(uint32_t tlsRva, uint32_t tlsSize) {
-        uint64_t tlsOffset = RvaToFileOffset(tlsRva);
-        if (tlsOffset == 0) return;
+        auto optTls = RvaToFileOffset(tlsRva);
+        if (!optTls.has_value()) return;
+        uint64_t tlsOffset = *optTls;
 
         if (m_metadata.is64Bit) {
             IMAGE_TLS_DIRECTORY64 tls64;
             if (SafeRead(tlsOffset, &tls64, sizeof(tls64))) {
                 if (tls64.AddressOfCallBacks != 0 && m_metadata.imageBase != 0) {
                     uint64_t cbRva = tls64.AddressOfCallBacks - m_metadata.imageBase;
-                    uint64_t cbFileOffset = RvaToFileOffset(cbRva);
-                    if (cbFileOffset != 0) {
+                    auto optCb = RvaToFileOffset(cbRva);
+                    if (optCb.has_value()) {
+                        uint64_t cbFileOffset = *optCb;
                         uint64_t cbVa = 0;
                         while (SafeRead(cbFileOffset, &cbVa, sizeof(cbVa)) && cbVa != 0) {
                             m_tlsCallbacks.push_back({ cbVa - m_metadata.imageBase, cbVa });
@@ -563,8 +585,9 @@ namespace Dracula {
             if (SafeRead(tlsOffset, &tls32, sizeof(tls32))) {
                 if (tls32.AddressOfCallBacks != 0 && m_metadata.imageBase != 0) {
                     uint64_t cbRva = tls32.AddressOfCallBacks - m_metadata.imageBase;
-                    uint64_t cbFileOffset = RvaToFileOffset(cbRva);
-                    if (cbFileOffset != 0) {
+                    auto optCb = RvaToFileOffset(cbRva);
+                    if (optCb.has_value()) {
+                        uint64_t cbFileOffset = *optCb;
                         uint32_t cbVa = 0;
                         while (SafeRead(cbFileOffset, &cbVa, sizeof(cbVa)) && cbVa != 0) {
                             m_tlsCallbacks.push_back({ cbVa - m_metadata.imageBase, cbVa });
@@ -588,7 +611,7 @@ namespace Dracula {
             f.severity = FindingSeverity::Low;
             f.confidence = FindingConfidence::High;
             f.title = "ASLR (Address Space Layout Randomization) Disabled";
-            f.description = "Binary lacks DYNAMIC_BASE characteristic flag; loads at fixed image base 0x" + std::to_string(m_metadata.imageBase);
+            f.description = "Binary lacks DYNAMIC_BASE characteristic flag; loads at fixed image base " + Format::Hex(m_metadata.imageBase);
             f.evidence = "DllCharacteristics missing IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE";
             f.source = "PE Inspector";
             f.tags = {"ASLR", "ExploitMitigation"};
@@ -622,7 +645,7 @@ namespace Dracula {
                     f.rva = s.virtualAddress;
                     f.title = "Writable & Executable (RWX) Section Detected: " + s.name;
                     f.description = "Section '" + s.name + "' has both WRITE and EXECUTE permissions, commonly used by packers or self-modifying shellcode.";
-                    f.evidence = "Characteristics: 0x" + std::to_string(s.characteristics);
+                    f.evidence = "Characteristics: " + Format::Hex(s.characteristics);
                     f.source = "PE Inspector";
                     f.tags = {"RWX", "SelfModifyingCode", "MITRE:T1055"};
                     out.push_back(f);
@@ -676,7 +699,7 @@ namespace Dracula {
                 f.rva = imp.iatRva;
                 f.title = "Imported Sensitive API: " + imp.functionName + " (" + imp.dllName + ")";
                 f.description = imp.riskDescription;
-                f.evidence = "Import Table: " + imp.dllName + "!" + imp.functionName + " @ IAT RVA 0x" + std::to_string(imp.iatRva);
+                f.evidence = "Import Table: " + imp.dllName + "!" + imp.functionName + " @ IAT RVA " + Format::Hex(imp.iatRva);
                 f.source = "PE Inspector";
                 f.tags = {"Imports", "Capabilities"};
                 out.push_back(f);

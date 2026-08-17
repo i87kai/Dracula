@@ -35,6 +35,12 @@ namespace Ui {
            << C(ColorRole::Text) << message << R() << "\n";
     }
 
+    static bool s_errorOccurred = false;
+
+    bool HasError() { return s_errorOccurred; }
+    void ResetError() { s_errorOccurred = false; }
+    void SetError() { s_errorOccurred = true; }
+
     void Success(const std::string& message) {
         Message(ColorRole::Success, Terminal::Checkmark(), message, std::cout);
     }
@@ -44,6 +50,7 @@ namespace Ui {
     }
 
     void Error(const std::string& message) {
+        s_errorOccurred = true;
         Message(ColorRole::Error, Terminal::Crossmark(), message, std::cerr);
     }
 
@@ -137,6 +144,7 @@ namespace Ui {
 
     void MissingArgument(const CommandDefinition& cmd, const std::string& reason,
                          const std::string& tip) {
+        s_errorOccurred = true;
         std::string example = cmd.examples.empty() ? "" : cmd.examples.front();
         std::string effectiveTip = tip;
         if (effectiveTip.empty() && cmd.takesFilePath) {

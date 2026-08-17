@@ -1,4 +1,5 @@
 #include "core/win32_hle.h"
+#include "common/format.h"
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
@@ -207,7 +208,7 @@ namespace Dracula {
                 f.rva = ctx.callerRva;
                 f.title = "Dynamic Allocation of RWX (PAGE_EXECUTE_READWRITE) Memory";
                 f.description = "Emulated code called VirtualAlloc requesting RWX page permissions (size: " + std::to_string(alignedSize) + " bytes).";
-                f.evidence = "VirtualAlloc(size=0x" + std::to_string(alignedSize) + ", protect=PAGE_EXECUTE_READWRITE)";
+                f.evidence = "VirtualAlloc(size=" + Format::Hex(alignedSize) + ", protect=PAGE_EXECUTE_READWRITE)";
                 f.source = "Win32 HLE";
                 f.tags = {"VirtualAlloc", "RWX", "MITRE:T1055"};
                 findings.push_back(f);
@@ -304,7 +305,7 @@ namespace Dracula {
         // ── GetProcAddress ────────────────────────────────────────────────────
         RegisterApi("kernel32.dll", "GetProcAddress", [this](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
             uint64_t thunk = GetOrCreateApiThunk("kernel32.dll", "DynamicApi");
-            outDetails = "GetProcAddress returned synthetic thunk 0x" + std::to_string(thunk);
+            outDetails = "GetProcAddress returned synthetic thunk " + Format::Hex(thunk);
             return thunk;
         });
 

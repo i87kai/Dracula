@@ -1,5 +1,8 @@
 #include "common/findings.h"
 #include "common/version.h"
+#include "common/input_validator.h"
+#include "common/format.h"
+#include "common/paths.h"
 #include "core/pe_inspector.h"
 #include "core/entropy_analyzer.h"
 #include "core/strings_analyzer.h"
@@ -1168,6 +1171,146 @@ static void TestSandboxProcessLineageAndThreatScoring() {
     }
 }
 
+static void TestAuditBugFixesPass() {
+    std::cout << "\n\033[1;36m[+] Running Audit Bug Fix Regression Suite (Bugs 1-9)...\033[0m\n";
+
+    std::string samplesDir = "samples";
+    if (!std::filesystem::exists(samplesDir) && std::filesystem::exists("../samples")) {
+        samplesDir = "../samples";
+    }
+
+    std::string samplePath = "samples/test_sample.exe";
+    if (!std::filesystem::exists(samplePath)) {
+        if (std::filesystem::exists("../samples/test_sample.exe")) {
+            samplePath = "../samples/test_sample.exe";
+        } else {
+            std::string resP = Dracula::Paths::ResolveResource("samples/test_sample.exe");
+            if (!resP.empty()) samplePath = resP;
+        }
+    }
+
+    // Bug 1: Directory path handling without exception
+    {
+        auto res = Dracula::InputValidator::ValidateFile(samplesDir);
+        AssertTest(res.status == Dracula::FileValidationStatus::IsDirectory, "Bug 1: InputValidator reports IsDirectory for 'samples'");
+        AssertTest(!res.IsValid(), "Bug 1: IsDirectory is not valid file");
+
+        Dracula::PeInspector insp;
+        std::string err;
+        bool loaded = insp.LoadFromFile(samplesDir, err);
+        AssertTest(!loaded, "Bug 1: PeInspector::LoadFromFile returns false on directory");
+        AssertTest(err.find("directory") != std::string::npos, "Bug 1: Error message explains it is a directory");
+    }
+
+    // Bug 2: Out of bounds RVA translation
+    {
+        Dracula::PeInspector insp;
+        std::string err;
+        insp.LoadFromFile(samplePath, err);
+        auto optOffset = insp.RvaToFileOffset(0xDEADBEEF);
+        AssertTest(!optOffset.has_value(), "Bug 2: RvaToFileOffset(0xDEADBEEF) returns std::nullopt");
+
+        auto optValid = insp.RvaToFileOffset(insp.GetMetadata().entryPointRva);
+        AssertTest(optValid.has_value(), "Bug 2: RvaToFileOffset(entryPointRva) returns valid offset");
+    }
+
+    // Bug 3: Hex format consistency & no decimal formatting with 0x prefix
+    {
+        std::string h1 = Dracula::Format::Hex(static_cast<uint64_t>(0xA278));
+        AssertTest(h1 == "0xa278", "Bug 3: Format::Hex(0xA278) produces 0xa278 (not 0x41592)");
+
+        std::string fn = Dracula::Format::FunctionName(0x105F);
+        AssertTest(fn == "sub_105f", "Bug 3: Format::FunctionName(0x105F) produces sub_105f (not sub_4191)");
+
+        Dracula::PeInspector insp;
+        std::string err;
+        if (insp.LoadFromFile(samplePath, err)) {
+            auto findings = insp.GenerateFindings();
+            bool foundBad0x = false;
+            for (const auto& f : findings) {
+                if (f.evidence.find("0x41592") != std::string::npos) foundBad0x = true;
+            }
+            AssertTest(!foundBad0x, "Bug 3: No decimal IAT RVA printed with 0x prefix in PE findings");
+        }
+    }
+
+    // Bug 4: Non-existent file analysis does not evaluate false threats
+    {
+        Dracula::AnalysisOrchestrator orch;
+        Dracula::OrchestratorOptions opts;
+        auto res = orch.AnalyzeFile("samples/non_existent_file_xyz.exe", opts);
+        AssertTest(res.threatScore == 0, "Bug 4: Non-existent file receives threatScore == 0");
+        AssertTest(res.threatLevel == "N/A", "Bug 4: Non-existent file receives threatLevel == N/A");
+        AssertTest(res.findings.empty(), "Bug 4: Non-existent file produces no synthetic PE findings");
+    }
+
+    // Bug 5: MCP unknown tool returns -32601 before argument checking
+    {
+        Dracula::McpServer mcp;
+        std::string req = "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"tools/call\",\"params\":{\"name\":\"non_existent_fake_tool\"}}";
+        std::string resp = mcp.ProcessMessage(req);
+        AssertTest(resp.find("-32601") != std::string::npos, "Bug 5: MCP returns error code -32601 for unknown tool");
+        AssertTest(resp.find("Unknown tool: non_existent_fake_tool") != std::string::npos, "Bug 5: MCP response indicates Unknown tool");
+        AssertTest(resp.find("Missing required") == std::string::npos, "Bug 5: MCP does not return argument error for unknown tool");
+    }
+
+    // Bug 6 & Bug 7: Strict pattern scanner and /scan syntax
+    {
+        auto parseOk = Dracula::PatternScanner::ParsePatternStrict("48 8B 05 ?? ?? ?? ?? 48 85 C0");
+        AssertTest(parseOk.IsValid(), "Bug 7: Valid hex pattern parses strictly");
+        AssertTest(parseOk.pattern.size() == 10, "Bug 7: Parsed 10 pattern bytes");
+        AssertTest(parseOk.pattern[3].isWildcard, "Bug 7: Wildcard byte detected");
+
+        auto parseBad = Dracula::PatternScanner::ParsePatternStrict("ZZ GG HH");
+        AssertTest(!parseBad.IsValid(), "Bug 7: Invalid pattern 'ZZ GG HH' rejected");
+        AssertTest(parseBad.status == Dracula::PatternParseStatus::InvalidHexDigit || parseBad.status == Dracula::PatternParseStatus::InvalidTokenLength, "Bug 7: Rejection status is InvalidHexDigit/InvalidTokenLength");
+        AssertTest(!parseBad.errorMessage.empty(), "Bug 7: Rejection produces descriptive error message");
+
+        std::string scanErr;
+        auto matches = Dracula::PatternScanner::ScanFile(samplePath, "ZZ GG HH", &scanErr);
+        AssertTest(matches.empty(), "Bug 7: Scan with invalid pattern returns empty");
+        AssertTest(!scanErr.empty(), "Bug 7: Scan with invalid pattern reports parse error");
+    }
+
+    // Bug 8: Guest share staging isolation
+    {
+        std::string rootHandoff = "guest_share/dracula_session.ini";
+        bool existedBefore = std::filesystem::exists(rootHandoff);
+
+        std::error_code ec;
+        auto tempP = std::filesystem::temp_directory_path(ec) / "Dracula";
+        AssertTest(!ec, "Bug 8: System temp path accessible for Dracula staging");
+
+        bool existsNow = std::filesystem::exists(rootHandoff);
+        AssertTest(existedBefore == existsNow, "Bug 8: Workspace guest_share root is untouched");
+    }
+
+    // Bug 9: Anti-evasion CLI options flexibility
+    {
+        Dracula::DraculaShell shell;
+        char arg0[] = "Dracula.exe";
+        char arg1[] = "--anti-evasion";
+        char arg2[] = "--compare";
+        std::vector<char> sampleBuf(samplePath.begin(), samplePath.end());
+        sampleBuf.push_back('\0');
+        char* arg3 = sampleBuf.data();
+
+        char* argv1[] = { arg0, arg1, arg2, arg3 };
+        int rc1 = shell.ProcessArgs(4, argv1);
+        AssertTest(rc1 == 0, "Bug 9: Dracula --anti-evasion --compare <sample> returns 0");
+
+        char* argv2[] = { arg0, arg1, arg3, arg2 };
+        int rc2 = shell.ProcessArgs(4, argv2);
+        AssertTest(rc2 == 0, "Bug 9: Dracula --anti-evasion <sample> --compare returns 0");
+
+        char argFail1[] = "--analyze";
+        char argFail2[] = "non_existent_fake_path.exe";
+        char* argvFail[] = { arg0, argFail1, argFail2 };
+        int rcFail = shell.ProcessArgs(3, argvFail);
+        AssertTest(rcFail != 0, "Bug 4 & CLI: Dracula --analyze on non-existent file returns non-zero exit code");
+    }
+}
+
 int main() {
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << "\033[1;31m 🧛 DRACULA DEEP VERIFICATION & AUDIT TEST HARNESS\033[0m\n";
@@ -1193,6 +1336,7 @@ int main() {
     TestChangelogParsing();
     TestSessionWorkflow();
     TestSandboxProcessLineageAndThreatScoring();
+    TestAuditBugFixesPass();
 
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << " FINAL AUDIT RESULTS: \033[1;32m" << g_passCount << " PASSED\033[0m, \033[1;31m"

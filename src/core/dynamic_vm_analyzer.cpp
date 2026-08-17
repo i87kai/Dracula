@@ -1,5 +1,6 @@
 #include "core/dynamic_vm_analyzer.h"
 #include "common/config.h"
+#include "common/paths.h"
 #include "host/guest_session_handoff.h"
 #include <iostream>
 #include <filesystem>
@@ -149,18 +150,12 @@ namespace Sandbox {
             ~ServerGuard() { if (armed && server) server->Stop(); }
         } serverGuard{m_tcpServer.get()};
 
-        // Step 2: stage the sample and the session handoff into the share.
+        // Step 2: stage the sample and the session handoff into a per-session temporary directory.
         const auto& qemuCfg = m_qemu->GetConfig();
-        const std::string shareDir = qemuCfg.guestShareDir;
-        try {
-            std::filesystem::create_directories(shareDir);
-            const std::string destPath = shareDir + "/target_sample.exe";
-            std::filesystem::copy_file(executablePath, destPath,
-                                       std::filesystem::copy_options::overwrite_existing);
-            emitLocal(EventType::Info, "Sandbox", "Staged target binary into " + destPath);
-        } catch (const std::exception& ex) {
-            emitLocal(EventType::Error, "Sandbox",
-                      std::string("Failed to copy binary to guest_share: ") + ex.what());
+        std::string baseShareDir = qemuCfg.guestShareDir;
+        if (baseShareDir.empty() || !std::filesystem::exists(baseShareDir)) {
+            std::string resolved = Dracula::Paths::ResolveResource("guest_share");
+            if (!resolved.empty()) baseShareDir = resolved;
         }
 
         GuestSessionHandoff handoff;
@@ -171,16 +166,57 @@ namespace Sandbox {
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
 
+        std::error_code tempEc;
+        std::filesystem::path tempRoot = std::filesystem::temp_directory_path(tempEc) / "Dracula";
+        std::filesystem::path stagingShareDir = tempRoot / ("session_" + handoff.sessionId);
+
+        struct StagingGuard {
+            std::filesystem::path dir;
+            ~StagingGuard() {
+                if (!dir.empty()) {
+                    std::error_code ec;
+                    std::filesystem::remove_all(dir, ec);
+                }
+            }
+        } stagingGuard{stagingShareDir};
+
+        try {
+            std::filesystem::create_directories(stagingShareDir, tempEc);
+
+            // Copy base guest share files if available
+            if (!baseShareDir.empty() && std::filesystem::exists(baseShareDir, tempEc)) {
+                for (const auto& entry : std::filesystem::directory_iterator(baseShareDir, tempEc)) {
+                    if (tempEc) break;
+                    const auto name = entry.path().filename().string();
+                    if (name == "$recycle.bin" || name == "$RECYCLE.BIN") continue;
+                    if (name == "target_sample.exe" || name == "dracula_session.ini") continue;
+                    std::filesystem::copy(entry.path(), stagingShareDir / name,
+                                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing,
+                                          tempEc);
+                }
+            }
+
+            const std::string destPath = (stagingShareDir / "target_sample.exe").string();
+            std::filesystem::copy_file(executablePath, destPath,
+                                       std::filesystem::copy_options::overwrite_existing, tempEc);
+            emitLocal(EventType::Info, "Sandbox", "Staged target binary into temporary guest share: " + destPath);
+        } catch (const std::exception& ex) {
+            emitLocal(EventType::Error, "Sandbox",
+                      std::string("Failed to stage binary for QEMU: ") + ex.what());
+        }
+
         std::string handoffError;
-        if (WriteGuestSessionHandoff(shareDir, handoff, handoffError)) {
+        if (WriteGuestSessionHandoff(stagingShareDir.string(), handoff, handoffError)) {
             emitLocal(EventType::Info, "Sandbox",
                       "Wrote guest session handoff (host " + handoff.hostIp + ":" +
-                      std::to_string(handoff.hostPort) + ") into the shared folder");
+                      std::to_string(handoff.hostPort) + ") into the temporary staging share");
         } else {
             emitLocal(EventType::Error, "Sandbox",
                       "Could not write the guest session handoff: " + handoffError +
                       ". A guest provisioned with a fixed port will still connect.");
         }
+
+        m_qemu->SetGuestShareDir(stagingShareDir.string());
 
         // Step 3: launch QEMU. No inbound port forwarding is requested, so
         // nothing here can contend with the listener bound in step 1.
