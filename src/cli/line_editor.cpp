@@ -634,6 +634,10 @@ namespace Dracula {
             case Key::CtrlHome:  return EditAction::ScrollTop;
             case Key::CtrlEnd:   return EditAction::ScrollBottom;
 
+            // Selection mode leaves the input buffer and the palette untouched:
+            // it only changes who owns the mouse.
+            case Key::ToggleSelection: return EditAction::ToggleSelection;
+
             case Key::Left:      MoveCursorLeft();      return EditAction::Continue;
             case Key::Right:     MoveCursorRight();     return EditAction::Continue;
             case Key::Home:

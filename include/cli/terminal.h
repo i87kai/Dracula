@@ -108,6 +108,7 @@ namespace Dracula {
         CtrlA, CtrlC, CtrlD, CtrlE, CtrlK, CtrlL, CtrlU,
         CtrlHome, CtrlEnd,
         WheelUp, WheelDown,
+        ToggleSelection,   // F2: hand the mouse back to the terminal
         Resize
     };
 
@@ -156,6 +157,15 @@ namespace Dracula {
         // wheel and resize notifications on, quick-edit selection and VT input
         // translation off (both of those corrupt the key stream).
         static void EnableInteractiveInput(bool enable);
+
+        // Selection mode. ENABLE_MOUSE_INPUT and ENABLE_QUICK_EDIT_MODE are
+        // mutually exclusive on Windows: an application that consumes mouse
+        // events takes click-drag selection away from the console. This hands the
+        // mouse back to the terminal so the user can select and copy, at the cost
+        // of wheel scrolling until it is switched off again. Key events keep
+        // arriving either way, so the toggle key still works.
+        static void SetSelectionMode(bool enable);
+        static bool InSelectionMode();
 
         // Reset colours, show the cursor and flush. Safe to call repeatedly.
         static void ResetStyle();

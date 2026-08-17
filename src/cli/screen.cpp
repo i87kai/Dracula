@@ -333,9 +333,25 @@ namespace Dracula {
         m_sink.reset();
     }
 
+    void InteractiveScreen::SetSelectionMode(bool enable) {
+        if (m_selectionMode == enable) return;
+        m_selectionMode = enable;
+        Console::SetSelectionMode(enable);
+
+        // Leaving selection mode repaints from scratch: the terminal's own
+        // selection highlight may have been drawn over any row.
+        if (!enable) Invalidate();
+    }
+
     void InteractiveScreen::End() {
         if (!m_active) { RestoreStreams(); return; }
         RestoreStreams();
+        // Never leave the console in selection mode - the next program to run
+        // would inherit a half-configured input mode.
+        if (m_selectionMode) {
+            m_selectionMode = false;
+            Console::SetSelectionMode(false);
+        }
         Console::EnableInteractiveInput(false);
         Console::ShowCursor();
         Console::LeaveAlternateScreen();
@@ -505,18 +521,41 @@ namespace Dracula {
             // take the space that is actually left over, so the footer never
             // shows a half-truncated hint.
             const std::string sep = "   " + Terminal::Bullet() + "   ";
-            const std::string hints = "/ browse commands" + sep + "PageUp / PageDown scroll";
+
+            // Two lengths of the same hint. The short form still names the key,
+            // because a keybinding nobody can discover may as well not exist -
+            // so it is the last thing dropped, not the first.
+            const std::string hints = m_selectionMode
+                ? "SELECT MODE" + sep + "drag to select, Enter or Ctrl+C to copy" +
+                  sep + "F2 to resume scrolling"
+                : "/ browse commands" + sep + "PageUp / PageDown scroll" +
+                  sep + "F2 to select text";
+            const std::string hintsShort = m_selectionMode
+                ? "SELECT MODE" + sep + "F2 to resume"
+                : "F2 to select text";
             const size_t rightBudget =
                 right.empty() ? inner
                               : (inner > Text::VisibleWidth(right) + 3
                                  ? inner - Text::VisibleWidth(right) - 3 : 0);
 
-            std::string left = m_status;
+            // While selecting, the mode notice is the important thing on the
+            // strip; normally the session state is.
+            std::string left = m_selectionMode ? hints : m_status;
+            const std::string secondary = m_selectionMode ? m_status : hints;
+            const std::string secondaryShort = m_selectionMode ? m_status : hintsShort;
+
+            auto fits = [&](const std::string& tail) {
+                return !tail.empty() &&
+                       Text::VisibleWidth(left) + Text::VisibleWidth(sep) +
+                       Text::VisibleWidth(tail) <= rightBudget;
+            };
+
             if (left.empty()) {
-                left = hints;
-            } else if (Text::VisibleWidth(left) + Text::VisibleWidth(sep) +
-                       Text::VisibleWidth(hints) <= rightBudget) {
-                left += sep + hints;
+                left = secondary;
+            } else if (fits(secondary)) {
+                left += sep + secondary;
+            } else if (fits(secondaryShort)) {
+                left += sep + secondaryShort;
             }
 
             std::string body = Text::Truncate(left, inner);
@@ -529,7 +568,11 @@ namespace Dracula {
                                           inner - rightW) + right;
                 }
             }
-            put(m_layout.footer.top, std::string(kIndent, ' ') + muted + body + reset);
+            // Selection mode is a state the user must not lose track of, so the
+            // strip is lifted out of the muted grey while it is active.
+            const std::string tone = m_selectionMode
+                                   ? Terminal::Color(ColorRole::Warning) : muted;
+            put(m_layout.footer.top, std::string(kIndent, ' ') + tone + body + reset);
         }
 
         return frame;
@@ -578,6 +621,24 @@ namespace Dracula {
 
         InputEvent event;
         while (Console::ReadInput(event)) {
+            // While the user is selecting text, the frame must not change: a
+            // repaint would wipe the selection, and on Windows writing to the
+            // console while a selection is active blocks until it is released.
+            // So every key except the ones that end selection mode is swallowed
+            // here - that also stops a stray Enter from submitting a command the
+            // user cannot see.
+            if (m_selectionMode) {
+                if (event.key == Key::ToggleSelection || event.key == Key::Escape) {
+                    SetSelectionMode(false);
+                    Render(editor, prompt);
+                } else if (event.key == Key::Resize) {
+                    SetSelectionMode(false);
+                    Invalidate();
+                    Render(editor, prompt);
+                }
+                continue;
+            }
+
             const auto action = editor.HandleKey(event);
             const int viewport = m_layout.output.height;
 
@@ -615,6 +676,10 @@ namespace Dracula {
 
                 case LineEditor::EditAction::ScrollBottom:
                     m_output.ScrollToBottom();
+                    break;
+
+                case LineEditor::EditAction::ToggleSelection:
+                    SetSelectionMode(!m_selectionMode);
                     break;
 
                 case LineEditor::EditAction::ClearScreen:

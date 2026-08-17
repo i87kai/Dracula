@@ -1,4 +1,35 @@
 ============================================================
+Dracula v1.0.5
+Release: 2026-08-17
+============================================================
+
+Added
+-----
+- Selection mode, toggled with F2. It hands the mouse back to the terminal (ENABLE_QUICK_EDIT_MODE on, ENABLE_MOUSE_INPUT off) so text can be selected with a drag and copied with Enter or Ctrl+C, and F2 again returns the mouse to Dracula for wheel scrolling.
+- Console::SetSelectionMode / Console::InSelectionMode, and Key::ToggleSelection / EditAction::ToggleSelection, so the mode is part of the normalized input model rather than an ad-hoc console call.
+- The frame is frozen while selection mode is active: no repaint can wipe the selection, and every key except F2, Escape and a resize event is swallowed so a stray Enter cannot submit a command the user cannot see.
+- Footer mode indicator. The strip switches to amber and reads "SELECT MODE - drag to select, Enter or Ctrl+C to copy - F2 to resume scrolling" for as long as the mode is on.
+- A "Keys" section in /help documenting PageUp/PageDown, the wheel, Ctrl+Home/End, F2 and Ctrl+L.
+- Screen 7 layout checks: the toggle changes the footer and nothing else, leaves the input buffer and the output scroll anchor untouched in both directions, and the F2 hint survives on the footer even when a session summary is competing for the same row.
+
+Changed
+-------
+- The footer hint has a short form ("F2 to select text") used when the long form does not fit beside the session summary. Naming the key is the last thing dropped from the strip, not the first.
+
+Fixed
+-----
+- Fixed being unable to select or copy text in the interactive screen. Dracula claimed the mouse for wheel scrolling, and on Windows ENABLE_MOUSE_INPUT and ENABLE_QUICK_EDIT_MODE are mutually exclusive, so click-drag selection was silently disabled with no way to get it back.
+- Fixed the console being left WITHOUT quick-edit selection after Dracula exited: EnableInteractiveInput(false) cleared the mouse and window flags but never restored ENABLE_QUICK_EDIT_MODE, so the parent shell inherited a console that could no longer select text.
+- Selection mode is always cleared on exit, so no half-configured input mode is ever inherited by the next program.
+
+Verified
+--------
+- Clean Release build (GCC, MinGW Makefiles, -O3) with no warnings or errors.
+- 196 terminal UI checks pass, 111 analysis-core checks pass, test_emulate_buffer passes, CTest 3/3.
+- Real console input mode transitions confirmed against a real console handle: startup (mouse 1, quick-edit 1), interactive (mouse 1, quick-edit 0), selection on (mouse 0, quick-edit 1), selection off (mouse 1, quick-edit 0), restored on exit (quick-edit 1, line input 1).
+- Real Dracula.exe launches and runs in a live console; the artwork, region layout, dividers, prompt strip, palette and scrolling are unchanged.
+
+============================================================
 Dracula v1.0.4
 Release: 2026-08-17
 ============================================================

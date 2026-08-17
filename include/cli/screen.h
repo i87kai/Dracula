@@ -194,6 +194,12 @@ namespace Dracula {
         void Render(const LineEditor& editor, const std::string& prompt);
         void Invalidate();
 
+        // Selection mode: the mouse belongs to the terminal so the user can
+        // select and copy. The frame is deliberately frozen while it is on -
+        // any repaint would wipe the selection out from under them.
+        void SetSelectionMode(bool enable);
+        bool InSelectionMode() const { return m_selectionMode; }
+
         const ScreenLayout& Layout() const { return m_layout; }
         void Relayout(int suggestionCount);
 
@@ -227,6 +233,7 @@ namespace Dracula {
 
         std::vector<std::string> m_lastFrame;
         bool m_active = false;
+        bool m_selectionMode = false;
         int m_lastWidth = 0;
         int m_lastHeight = 0;
     };

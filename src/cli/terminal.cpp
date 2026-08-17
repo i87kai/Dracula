@@ -311,6 +311,10 @@ namespace Dracula {
 
     // ─── Console redraw primitives ──────────────────────────────────────────
 
+    // Whether the mouse currently belongs to the terminal (selection) rather
+    // than to Dracula (wheel scrolling). See Console::SetSelectionMode.
+    static bool s_selectionMode = false;
+
     void Console::HideCursor() {
         if (!Terminal::IsInteractive()) return;
         std::cout << "\033[?25l" << std::flush;
@@ -423,6 +427,7 @@ namespace Dracula {
             case VK_END:    out.key = ctrl ? Key::CtrlEnd  : Key::End;  return true;
             case VK_PRIOR:  out.key = Key::PageUp;    return true;
             case VK_NEXT:   out.key = Key::PageDown;  return true;
+            case VK_F2:     out.key = Key::ToggleSelection; return true;
             case VK_SHIFT:
             case VK_CONTROL:
             case VK_MENU:
@@ -481,12 +486,47 @@ namespace Dracula {
             mode &= ~static_cast<DWORD>(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
         } else {
             mode &= ~static_cast<DWORD>(ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT);
-            mode |= ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
+            mode |= ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT
+                  | ENABLE_QUICK_EDIT_MODE;
         }
         SetConsoleMode(hIn, mode);
+        s_selectionMode = false;
 #else
         (void)enable;
 #endif
+    }
+
+    void Console::SetSelectionMode(bool enable) {
+#ifdef _WIN32
+        HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+        if (hIn == INVALID_HANDLE_VALUE) return;
+
+        DWORD mode = 0;
+        if (!GetConsoleMode(hIn, &mode)) return;
+
+        mode |= ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT;
+        if (enable) {
+            // Give the mouse back to the terminal. Wheel notches stop arriving
+            // as input events for as long as this lasts, which is precisely the
+            // trade the user asked for by pressing the key.
+            mode |= ENABLE_QUICK_EDIT_MODE;
+            mode &= ~static_cast<DWORD>(ENABLE_MOUSE_INPUT);
+        } else {
+            mode |= ENABLE_MOUSE_INPUT;
+            mode &= ~static_cast<DWORD>(ENABLE_QUICK_EDIT_MODE);
+        }
+        // Key events must keep arriving in both states, or the toggle would be
+        // one-way and the user would be stranded in selection mode.
+        mode &= ~static_cast<DWORD>(ENABLE_VIRTUAL_TERMINAL_INPUT);
+        mode &= ~static_cast<DWORD>(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+
+        if (!SetConsoleMode(hIn, mode)) return;
+#endif
+        s_selectionMode = enable;
+    }
+
+    bool Console::InSelectionMode() {
+        return s_selectionMode;
     }
 
     bool Console::ReadInput(InputEvent& out) {

@@ -245,7 +245,26 @@ namespace Dracula {
                   << C(ColorRole::Muted) << " to browse commands interactively   "
                   << Terminal::Bullet() << "   " << R()
                   << C(ColorRole::Technical) << "/help <command>" << R()
-                  << C(ColorRole::Muted) << " for details" << R() << "\n\n";
+                  << C(ColorRole::Muted) << " for details" << R() << "\n";
+
+        std::cout << "\n  " << C(ColorRole::Accent) << "Keys" << R() << "\n";
+        const std::pair<const char*, const char*> keys[] = {
+            {"PageUp / PageDown", "Scroll the output region by a page"},
+            {"Wheel",             "Scroll the output region"},
+            {"Ctrl+Home / End",   "Jump to the oldest / newest output"},
+            {"F2",                "Release the mouse to select and copy text, and back"},
+            {"Ctrl+L",            "Repaint the screen"},
+        };
+        size_t keyWidth = 0;
+        for (const auto& [key, _] : keys) {
+            keyWidth = std::max(keyWidth, Text::VisibleWidth(key));
+        }
+        keyWidth += 3;
+        for (const auto& [key, detail] : keys) {
+            std::cout << "    " << C(ColorRole::Technical) << Text::PadRight(key, keyWidth) << R()
+                      << C(ColorRole::Muted) << detail << R() << "\n";
+        }
+        std::cout << "\n";
     }
 
     std::string DraculaShell::ResolveTargetFile(const std::vector<std::string>& args, size_t index) {
@@ -308,7 +327,8 @@ namespace Dracula {
             m_screen = &screen;
 
             std::string welcome = C(ColorRole::Muted) +
-                "Ready. PageUp / PageDown scroll this output region." + R();
+                "Ready. PageUp / PageDown scroll this output region, "
+                "F2 releases the mouse so you can select and copy text." + R();
             screen.Output().AppendLine("");
             screen.Output().AppendLine(welcome);
 

@@ -54,6 +54,8 @@ namespace Dracula {
             ScrollTop,      // Ctrl+Home: oldest output
             ScrollBottom,   // Ctrl+End: newest output
             ClearScreen,  // Ctrl+L
+            ToggleSelection, // F2: hand the mouse to the terminal so text can
+                             // be selected and copied, and back again
             Resize        // terminal geometry changed
         };
 

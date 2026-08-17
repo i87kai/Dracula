@@ -1129,6 +1129,8 @@ static void TestScrollKeyMapping() {
     Check(action(Key::CtrlHome)  == LineEditor::EditAction::ScrollTop,      "Ctrl+Home jumps to the oldest output");
     Check(action(Key::CtrlEnd)   == LineEditor::EditAction::ScrollBottom,   "Ctrl+End jumps to the newest output");
     Check(action(Key::Resize)    == LineEditor::EditAction::Resize,         "A resize event is surfaced to the screen");
+    Check(action(Key::ToggleSelection) == LineEditor::EditAction::ToggleSelection,
+          "F2 is surfaced to the screen as the selection-mode toggle");
 
     // Scrolling must never disturb the input buffer or the palette.
     editor.InsertString("/s");
@@ -1186,6 +1188,67 @@ static void TestResizePreservesState() {
           "Output scroll position is preserved across a width and height change");
 }
 
+static void TestSelectionMode() {
+    Section("Screen 7: selection mode releases the mouse without losing state");
+
+    const std::string prompt = Terminal::DraculaPrompt();
+
+    InteractiveScreen screen;
+    screen.SetStatusLine("sample: test_sample.exe");
+    for (int i = 0; i < 40; ++i) screen.Output().AppendLine("line " + std::to_string(i));
+
+    LineEditor editor;
+    editor.ResetBuffer();
+    editor.InsertString("/head");
+
+    // Scroll away from the bottom FIRST, so the baseline frame is the frame the
+    // user would actually be selecting from.
+    screen.PreviewFrame(120, 30, editor, prompt);
+    const auto layout = screen.Layout();
+    screen.Output().ScrollPageUp(layout.output.height);
+
+    auto frame = screen.PreviewFrame(120, 30, editor, prompt);
+
+    Check(!screen.InSelectionMode(), "The screen starts with the mouse bound to scrolling");
+    Check(Text::StripAnsi(frame[layout.footer.top]).find("F2") != std::string::npos,
+          "The footer advertises F2 even with a session summary competing for room");
+
+    // The toggle is pure UI state: nothing about the session may move.
+    const std::string typed = editor.GetBuffer();
+    const size_t scrolled = screen.Output().ScrollAnchor();
+
+    screen.SetSelectionMode(true);
+    auto selecting = screen.PreviewFrame(120, 30, editor, prompt);
+
+    Check(screen.InSelectionMode(), "F2 enters selection mode");
+    Check(Text::StripAnsi(selecting[layout.footer.top]).find("SELECT MODE") != std::string::npos,
+          "The footer says SELECT MODE while the mouse belongs to the terminal");
+    Check(Text::StripAnsi(selecting[layout.footer.top]).find("copy") != std::string::npos,
+          "The footer says how to copy");
+    Check(editor.GetBuffer() == typed, "Entering selection mode does not touch the input buffer");
+    Check(screen.Output().ScrollAnchor() == scrolled,
+          "Entering selection mode does not move the output viewport");
+
+    // Everything above the footer is untouched, so a frozen frame really is the
+    // same frame the user is selecting from.
+    bool onlyFooterChanged = selecting.size() == frame.size();
+    for (size_t i = 0; i + 1 < selecting.size() && onlyFooterChanged; ++i) {
+        if (i == static_cast<size_t>(layout.footer.top)) continue;
+        if (selecting[i] != frame[i]) onlyFooterChanged = false;
+    }
+    Check(onlyFooterChanged,
+          "Entering selection mode repaints the footer and nothing else");
+
+    screen.SetSelectionMode(false);
+    auto resumed = screen.PreviewFrame(120, 30, editor, prompt);
+    Check(!screen.InSelectionMode(), "F2 leaves selection mode");
+    Check(resumed[layout.footer.top] == frame[layout.footer.top],
+          "Leaving selection mode restores the ordinary footer");
+    Check(editor.GetBuffer() == typed, "Leaving selection mode does not touch the input buffer");
+    Check(screen.Output().ScrollAnchor() == scrolled,
+          "Leaving selection mode does not move the output viewport");
+}
+
 int main() {
     Terminal::Initialize();
 
@@ -1216,6 +1279,7 @@ int main() {
     TestOutputBufferScrolling();
     TestScrollKeyMapping();
     TestResizePreservesState();
+    TestSelectionMode();
 
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << " TERMINAL UI RESULTS: \033[1;32m" << g_pass << " PASSED\033[0m, \033[1;31m"
