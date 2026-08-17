@@ -1,0 +1,12 @@
+// injectable_resource.rc
+// Embeds InjectableDLL.dll as a raw binary resource (type=23 / RCDATA)
+// inside HostController.exe so it can be extracted and injected at runtime.
+//
+// Resource ID 101 is referenced by the injector as IDR_INJECTABLE_DLL.
+//
+// Build note: this .rc file is compiled by windres (MinGW) or rc.exe (MSVC)
+// and linked into HostController.exe via CMakeLists.txt.
+
+#define IDR_INJECTABLE_DLL 101
+
+IDR_INJECTABLE_DLL RCDATA "InjectableDLL.dll"

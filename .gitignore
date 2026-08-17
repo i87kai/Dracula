@@ -1,0 +1,36 @@
+# Build directories and artifacts
+build/
+bin/
+out/
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.exe
+*.exp
+*.pdb
+*.ilk
+
+# Generated reports & logs
+sandbox_report.txt
+*.log
+*.tmp
+
+# IDE & Editor files
+.vscode/
+.vs/
+.idea/
+*.user
+imgui.ini
+
+# Windows system artifacts
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+System Volume Information/
+
+# Compressed archives
+*.zip
+*.tar.gz
+*.7z
