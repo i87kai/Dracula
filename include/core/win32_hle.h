@@ -57,10 +57,14 @@ namespace Dracula {
         AntiDebugPolicy GetAntiDebugPolicy() const { return m_policy; }
 
         // Constants
-        static constexpr uint64_t kHleThunkBase   = 0x7FFF80000000ULL;
-        static constexpr uint64_t kMockTebAddress = 0x7FFE0000ULL;
-        static constexpr uint64_t kMockPebAddress = 0x7FFE1000ULL;
-        static constexpr uint64_t kMockHeapBase   = 0x10000000ULL;
+        static constexpr uint64_t kHleThunkBase = 0x7FFF80000000ULL;
+        static constexpr uint64_t kMockTeb64    = 0x7FFDF0000000ULL;
+        static constexpr uint64_t kMockPeb64    = 0x7FFDF0010000ULL;
+        static constexpr uint64_t kMockTeb32    = 0x7FFDE000ULL;
+        static constexpr uint64_t kMockPeb32    = 0x7FFDF000ULL;
+        static constexpr uint64_t kMockHeapBase = 0x10000000ULL;
+        static constexpr uint64_t kMockTebAddress = kMockTeb64;
+        static constexpr uint64_t kMockPebAddress = kMockPeb64;
 
     private:
         void InitializeDefaultHandlers();

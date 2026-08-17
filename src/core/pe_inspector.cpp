@@ -46,6 +46,16 @@ namespace Dracula {
         return "N/A";
     }
 
+    std::string PeInspector::ComputeSha256(const uint8_t* data, size_t size) {
+        if (!data || size == 0) return "";
+        return ComputeHash(data, size, CALG_SHA_256);
+    }
+
+    std::string PeInspector::ComputeMd5(const uint8_t* data, size_t size) {
+        if (!data || size == 0) return "";
+        return ComputeHash(data, size, CALG_MD5);
+    }
+
     PeInspector::PeInspector() = default;
     PeInspector::~PeInspector() = default;
 

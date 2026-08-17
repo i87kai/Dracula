@@ -176,11 +176,12 @@ namespace Dracula {
 
     // ─── Disassembly & Control Flow ───────────────────────────────────────────
     struct DisassembledInstruction {
-        uint64_t    address = 0;
-        uint64_t    rva = 0;
-        std::string bytesHex;
-        std::string mnemonic;
-        std::string operands;
+        uint64_t             address = 0;
+        uint64_t             rva = 0;
+        std::vector<uint8_t> bytes;
+        std::string          bytesHex;
+        std::string          mnemonic;
+        std::string          operands;
         uint32_t    size = 0;
         bool        isBranch = false;
         bool        isConditional = false;
@@ -259,6 +260,36 @@ namespace Dracula {
         std::string         errorMessage;
     };
 
+    // ─── Cross References (XREFs) ─────────────────────────────────────────────
+    enum class XRefType {
+        CodeCall,
+        CodeJump,
+        ImportCall,
+        StringRef,
+        DataRef
+    };
+
+    inline const char* XRefTypeToString(XRefType t) {
+        switch (t) {
+            case XRefType::CodeCall:   return "CALL";
+            case XRefType::CodeJump:   return "JUMP";
+            case XRefType::ImportCall: return "IMPORT";
+            case XRefType::StringRef:  return "STRING";
+            case XRefType::DataRef:    return "DATA";
+            default:                   return "UNKNOWN";
+        }
+    }
+
+    struct XRefEntry {
+        uint64_t    fromAddress = 0;
+        uint64_t    fromRva = 0;
+        uint64_t    toAddress = 0;
+        uint64_t    toRva = 0;
+        XRefType    type = XRefType::CodeCall;
+        std::string targetName;
+        std::string sourceInstruction;
+    };
+
     // ─── Unified Analysis Result ──────────────────────────────────────────────
     struct UnifiedAnalysisResult {
         SampleMetadata                 sample;
@@ -273,6 +304,7 @@ namespace Dracula {
         std::vector<ExtractedString>   strings;
         std::vector<std::string>       yaraMatches;
         std::vector<FunctionGraph>     functions;
+        std::vector<XRefEntry>         xrefs;
         EmulationResult                emulation;
         std::vector<Finding>           findings;
 

@@ -8,10 +8,22 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Build options
 option(BUILD_TESTS "Build comprehensive test suites" ON)
 
+# ─── Capstone Disassembly Engine ────────────────────────────────────────────
+set(CAPSTONE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_BUILD_CSTOOL OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(CAPSTONE_INSTALL OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_ARCHITECTURE_DEFAULT OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_X86_SUPPORT ON CACHE BOOL "" FORCE)
+
+add_subdirectory(third_party/capstone EXCLUDE_FROM_ALL)
+
 # ─── Include directories ────────────────────────────────────────────────────
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/capstone/include
 )
 
 # ─── Core Source Files ──────────────────────────────────────────────────────
@@ -24,6 +36,7 @@ set(DRACULA_CORE_SOURCES
     src/core/strings_analyzer.cpp
     src/core/disassembler.cpp
     src/core/cfg_analyzer.cpp
+    src/core/xref_analyzer.cpp
     src/core/pattern_scanner.cpp
     src/core/win32_hle.cpp
     src/core/unicorn_analyzer.cpp
@@ -44,8 +57,10 @@ add_library(DraculaCore STATIC ${DRACULA_CORE_SOURCES})
 target_include_directories(DraculaCore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/capstone/include
 )
 target_link_libraries(DraculaCore PUBLIC
+    capstone
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lib/libunicorn.a
 )
 

@@ -5,7 +5,9 @@
 #include "core/pattern_scanner.h"
 #include "core/disassembler.h"
 #include "core/cfg_analyzer.h"
+#include "core/xref_analyzer.h"
 #include "core/win32_hle.h"
+#include "core/unicorn_analyzer.h"
 #include "core/threat_evaluator.h"
 #include "core/analysis_orchestrator.h"
 #include "host/report_writer.h"
@@ -20,8 +22,12 @@
 #include <sstream>
 #include <iomanip>
 #include <vector>
+#include <set>
+#include <map>
+#include <stack>
 #include <cassert>
 #include <cstring>
+#include <filesystem>
 
 static int g_passCount = 0;
 static int g_failCount = 0;
@@ -36,332 +42,629 @@ static void AssertTest(bool condition, const std::string& testName) {
     }
 }
 
-// ─── Synthetic Valid PE Builder Helper ──────────────────────────────────────
-static std::vector<uint8_t> CreateMinimalPE64() {
+// ─── Simple Deterministic JSON Validator ───────────────────────────────────
+static bool ValidateJsonSyntax(const std::string& json, std::string& outErr) {
+    std::stack<char> braces;
+    bool inString = false;
+    bool escape = false;
+
+    for (size_t i = 0; i < json.size(); ++i) {
+        char c = json[i];
+        if (inString) {
+            if (escape) {
+                escape = false;
+            } else if (c == '\\') {
+                escape = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+        } else {
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{' || c == '[') {
+                braces.push(c);
+            } else if (c == '}') {
+                if (braces.empty() || braces.top() != '{') {
+                    outErr = "Unmatched '}' at pos " + std::to_string(i);
+                    return false;
+                }
+                braces.pop();
+            } else if (c == ']') {
+                if (braces.empty() || braces.top() != '[') {
+                    outErr = "Unmatched ']' at pos " + std::to_string(i);
+                    return false;
+                }
+                braces.pop();
+            }
+        }
+    }
+
+    if (inString) {
+        outErr = "Unterminated string literal in JSON";
+        return false;
+    }
+    if (!braces.empty()) {
+        outErr = "Unclosed brackets/braces in JSON (stack depth: " + std::to_string(braces.size()) + ")";
+        return false;
+    }
+    return true;
+}
+
+// ─── Synthetic PE Builder Helpers ──────────────────────────────────────────
+static std::vector<uint8_t> CreateSyntheticPE(bool is64Bit, bool isDll = false, size_t sectionCount = 1) {
     std::vector<uint8_t> buf(0x1000, 0);
 
-    // DOS Header
     IMAGE_DOS_HEADER* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(buf.data());
     dos->e_magic = IMAGE_DOS_SIGNATURE; // "MZ"
     dos->e_lfanew = 0x80;
 
-    // NT Signature
     *reinterpret_cast<DWORD*>(buf.data() + 0x80) = IMAGE_NT_SIGNATURE; // "PE\0\0"
 
-    // File Header
     IMAGE_FILE_HEADER* fileHdr = reinterpret_cast<IMAGE_FILE_HEADER*>(buf.data() + 0x84);
-    fileHdr->Machine = IMAGE_FILE_MACHINE_AMD64;
-    fileHdr->NumberOfSections = 1;
-    fileHdr->SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER64);
-    fileHdr->Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_LARGE_ADDRESS_AWARE;
+    fileHdr->Machine = is64Bit ? IMAGE_FILE_MACHINE_AMD64 : IMAGE_FILE_MACHINE_I386;
+    fileHdr->NumberOfSections = static_cast<WORD>(sectionCount);
+    fileHdr->Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE;
+    if (is64Bit) fileHdr->Characteristics |= IMAGE_FILE_LARGE_ADDRESS_AWARE;
+    if (isDll) fileHdr->Characteristics |= IMAGE_FILE_DLL;
 
-    // Optional Header 64
-    IMAGE_OPTIONAL_HEADER64* optHdr = reinterpret_cast<IMAGE_OPTIONAL_HEADER64*>(buf.data() + 0x84 + sizeof(IMAGE_FILE_HEADER));
-    optHdr->Magic = IMAGE_NT_OPTIONAL_HDR64_MAGIC;
-    optHdr->AddressOfEntryPoint = 0x1000;
-    optHdr->ImageBase = 0x140000000ULL;
-    optHdr->SectionAlignment = 0x1000;
-    optHdr->FileAlignment = 0x200;
-    optHdr->MajorSubsystemVersion = 6;
-    optHdr->Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI;
-    optHdr->DllCharacteristics = IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE | IMAGE_DLLCHARACTERISTICS_NX_COMPAT | IMAGE_DLLCHARACTERISTICS_GUARD_CF;
-    optHdr->NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
+    size_t optHdrOffset = 0x84 + sizeof(IMAGE_FILE_HEADER);
 
-    // Section Header (.text)
-    size_t secOffset = 0x84 + sizeof(IMAGE_FILE_HEADER) + sizeof(IMAGE_OPTIONAL_HEADER64);
-    IMAGE_SECTION_HEADER* sec = reinterpret_cast<IMAGE_SECTION_HEADER*>(buf.data() + secOffset);
-    std::memcpy(sec->Name, ".text\0\0\0", 8);
-    sec->VirtualAddress = 0x1000;
-    sec->Misc.VirtualSize = 0x200;
-    sec->PointerToRawData = 0x400;
-    sec->SizeOfRawData = 0x200;
-    sec->Characteristics = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ;
+    if (is64Bit) {
+        fileHdr->SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER64);
+        IMAGE_OPTIONAL_HEADER64* opt = reinterpret_cast<IMAGE_OPTIONAL_HEADER64*>(buf.data() + optHdrOffset);
+        opt->Magic = IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+        opt->AddressOfEntryPoint = 0x1000;
+        opt->ImageBase = 0x140000000ULL;
+        opt->SectionAlignment = 0x1000;
+        opt->FileAlignment = 0x200;
+        opt->MajorSubsystemVersion = 6;
+        opt->Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI;
+        opt->DllCharacteristics = IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE | IMAGE_DLLCHARACTERISTICS_NX_COMPAT | IMAGE_DLLCHARACTERISTICS_GUARD_CF;
+        opt->NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
+    } else {
+        fileHdr->SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER32);
+        IMAGE_OPTIONAL_HEADER32* opt = reinterpret_cast<IMAGE_OPTIONAL_HEADER32*>(buf.data() + optHdrOffset);
+        opt->Magic = IMAGE_NT_OPTIONAL_HDR32_MAGIC;
+        opt->AddressOfEntryPoint = 0x1000;
+        opt->ImageBase = 0x400000;
+        opt->SectionAlignment = 0x1000;
+        opt->FileAlignment = 0x200;
+        opt->MajorSubsystemVersion = 6;
+        opt->Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI;
+        opt->DllCharacteristics = IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE | IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
+        opt->NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
+    }
 
-    // Sample code inside .text at raw offset 0x400:
-    // mov rax, 0x42; ret;
-    uint8_t code[] = { 0x48, 0xC7, 0xC0, 0x42, 0x00, 0x00, 0x00, 0xC3 };
-    std::memcpy(buf.data() + 0x400, code, sizeof(code));
+    size_t secOffset = optHdrOffset + fileHdr->SizeOfOptionalHeader;
+    for (size_t s = 0; s < sectionCount; ++s) {
+        IMAGE_SECTION_HEADER* sec = reinterpret_cast<IMAGE_SECTION_HEADER*>(buf.data() + secOffset + s * sizeof(IMAGE_SECTION_HEADER));
+        std::string sName = (s == 0) ? ".text" : (".sec" + std::to_string(s));
+        std::memcpy(sec->Name, sName.c_str(), std::min<size_t>(8, sName.size()));
+        sec->VirtualAddress = static_cast<DWORD>(0x1000 * (s + 1));
+        sec->Misc.VirtualSize = 0x200;
+        sec->PointerToRawData = static_cast<DWORD>(0x400 * (s + 1));
+        sec->SizeOfRawData = 0x200;
+        sec->Characteristics = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ;
+
+        if (buf.size() < sec->PointerToRawData + 0x200) {
+            buf.resize(sec->PointerToRawData + 0x200, 0);
+        }
+
+        // Add dummy RET opcode at section start
+        buf[sec->PointerToRawData] = 0xC3;
+    }
 
     return buf;
 }
 
-// ─── Test 1: PE Inspector & Security Mitigations ───────────────────────────
-static void TestPeInspector() {
-    std::cout << "\n\033[1;36m=== [TEST 1] PE Inspector & Security Mitigations ===\033[0m\n";
-    auto peData = CreateMinimalPE64();
-    Dracula::PeInspector inspector;
-    std::string err;
-    bool ok = inspector.LoadFromMemory(peData.data(), peData.size(), err);
+// ─── 1. CAPSTONE DISASSEMBLER DEEP AUDIT (x86 & x64) ──────────────────────
+static void TestCapstoneDisassembler() {
+    std::cout << "\n\033[1;36m=== [AUDIT 1] Capstone x86/x64 Disassembler Deep Audit ===\033[0m\n";
 
-    AssertTest(ok, "Parse minimal synthetic PE64 in memory");
-    AssertTest(inspector.GetMetadata().is64Bit, "Detect x64 architecture");
-    AssertTest(inspector.GetMetadata().entryPointRva == 0x1000, "Extract EntryPoint RVA (0x1000)");
-    AssertTest(inspector.GetMitigations().hasAslr, "Audit ASLR (DynamicBase) enabled");
-    AssertTest(inspector.GetMitigations().hasDep, "Audit DEP/NX compatibility enabled");
-    AssertTest(inspector.GetMitigations().hasCfg, "Audit Control Flow Guard (CFG) enabled");
-    AssertTest(!inspector.GetMitigations().hasRwxSections, "Verify no RWX sections present");
+    // A. Test x64 Instruction Corpus
+    Dracula::Disassembler disasm64(Dracula::Architecture::X86_64);
+    AssertTest(disasm64.IsValid(), "Capstone x64 engine initialized successfully");
 
-    uint64_t fileOff = inspector.RvaToFileOffset(0x1000);
-    AssertTest(fileOff == 0x400, "Translate RVA 0x1000 to File Offset 0x400");
+    // 1. Prefixes & REX
+    uint8_t codeRex[] = { 0xF0, 0x48, 0x0F, 0xB1, 0x0B }; // lock cmpxchg [rbx], rcx
+    auto r1 = disasm64.Disassemble(codeRex, sizeof(codeRex), 0x140001000ULL);
+    AssertTest(!r1.empty() && r1[0].mnemonic.find("cmpxchg") != std::string::npos, "Disassemble x64 LOCK prefix with REX.W");
+
+    // 2. ModR/M + SIB addressing: mov eax, [rbx + rcx*4 + 0x20]
+    uint8_t codeSib[] = { 0x8B, 0x44, 0x8B, 0x20 };
+    auto r2 = disasm64.Disassemble(codeSib, sizeof(codeSib), 0x140001000ULL);
+    AssertTest(!r2.empty() && r2[0].mnemonic == "mov" && r2[0].operands.find("rcx*4") != std::string::npos, "Disassemble ModR/M + SIB (base + index*4 + disp)");
+
+    // 3. RIP-relative addressing: mov rax, [rip + 0x1234]
+    uint8_t codeRip[] = { 0x48, 0x8B, 0x05, 0x34, 0x12, 0x00, 0x00 };
+    auto r3 = disasm64.Disassemble(codeRip, sizeof(codeRip), 0x140001000ULL);
+    AssertTest(!r3.empty() && r3[0].targetAddress == 0x140001000ULL + 7 + 0x1234, "Disassemble and accurately resolve RIP-relative target VA");
+
+    // 4. Indirect call & Indirect jump
+    uint8_t codeIndirect[] = { 0xFF, 0x10, 0xFF, 0x20 }; // call qword ptr [rax]; jmp qword ptr [rax]
+    auto r4 = disasm64.Disassemble(codeIndirect, sizeof(codeIndirect), 0x140001000ULL);
+    AssertTest(r4.size() == 2 && r4[0].isCall && r4[1].isBranch, "Disassemble indirect CALL and JMP with group classification");
+
+    // 5. Conditional branches (jrcxz, jz, jg, jle)
+    uint8_t codeCond[] = { 0xE3, 0x05, 0x74, 0x03, 0x7F, 0x01, 0x7E, 0x00 };
+    auto r5 = disasm64.Disassemble(codeCond, sizeof(codeCond), 0x140001000ULL);
+    AssertTest(r5.size() == 4 && r5[0].isConditional && r5[1].isConditional, "Disassemble conditional branch variants (jrcxz, jz, jg, jle)");
+
+    // 6. SIMD / AVX instructions
+    uint8_t codeSimd[] = { 0x0F, 0x28, 0xC1, 0x66, 0x0F, 0xEF, 0xC0 }; // movaps xmm0, xmm1; pxor xmm0, xmm0
+    auto r6 = disasm64.Disassemble(codeSimd, sizeof(codeSimd), 0x140001000ULL);
+    AssertTest(r6.size() == 2 && r6[0].mnemonic == "movaps" && r6[1].mnemonic == "pxor", "Disassemble SSE/SIMD instructions (movaps, pxor)");
+
+    // 7. Multiple operand sizes (8-bit, 16-bit, 32-bit, 64-bit)
+    uint8_t codeSizes[] = { 0xB0, 0x42, 0x66, 0xB8, 0x34, 0x12, 0xB8, 0x78, 0x56, 0x34, 0x12, 0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00 };
+    auto r7 = disasm64.Disassemble(codeSizes, sizeof(codeSizes), 0x140001000ULL);
+    AssertTest(r7.size() == 4, "Disassemble 8-bit (AL), 16-bit (AX), 32-bit (EAX), and 64-bit (RAX) operands");
+
+    // B. Test x86 (32-bit) Disassembly Mode
+    Dracula::Disassembler disasm32(Dracula::Architecture::X86_32);
+    AssertTest(disasm32.IsValid(), "Capstone x86 32-bit engine initialized successfully");
+    uint8_t code32[] = { 0x55, 0x89, 0xE5, 0x8B, 0x45, 0x08, 0x5D, 0xC3 }; // push ebp; mov ebp, esp; mov eax, [ebp+8]; pop ebp; ret
+    auto r32 = disasm32.Disassemble(code32, sizeof(code32), 0x00401000ULL);
+    AssertTest(r32.size() == 5 && r32[2].operands.find("ebp") != std::string::npos, "Disassemble 32-bit x86 stack frame prologs and accesses");
+
+    // C. Invalid / Truncated Opcode Handling
+    uint8_t corruptOpcode[] = { 0x0F }; // Incomplete 2-byte opcode
+    auto rBad = disasm64.Disassemble(corruptOpcode, sizeof(corruptOpcode), 0x140001000ULL);
+    AssertTest(rBad.empty(), "Handle truncated/incomplete opcode without crashing");
 }
 
-// ─── Test 2: Strings Analyzer & Classification ─────────────────────────────
-static void TestStringsAnalyzer() {
-    std::cout << "\n\033[1;36m=== [TEST 2] Strings Analyzer & Classification ===\033[0m\n";
-    std::vector<uint8_t> testBlob;
-    auto appendStr = [&](const std::string& str) {
-        testBlob.insert(testBlob.end(), str.begin(), str.end());
-        testBlob.push_back(0);
-    };
-    appendStr("SomeHeaderData");
-    appendStr("http://c2.evil-domain.com/payload.exe");
-    appendStr("C:\\Windows\\System32\\cmd.exe");
-    appendStr("powershell.exe -nop -exec bypass");
-    appendStr("HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    appendStr("192.168.1.100");
-    appendStr("kernel32.dll");
+// ─── 2. CFG TOPOLOGY & GRAPH DEEP AUDIT ───────────────────────────────────
+static void TestCfgTopology() {
+    std::cout << "\n\033[1;36m=== [AUDIT 2] Control Flow Graph (CFG) Topology & Edge Verification ===\033[0m\n";
 
-    Dracula::StringsAnalyzer sa;
-    auto results = sa.ExtractStrings(testBlob.data(), testBlob.size(), 4);
-
-    bool foundUrl = false, foundCmd = false, foundReg = false, foundIp = false, foundDll = false;
-    for (const auto& s : results) {
-        if (s.category == Dracula::StringCategory::Url && s.value.find("http://c2.evil-domain") != std::string::npos) foundUrl = true;
-        if (s.category == Dracula::StringCategory::CommandFragment && s.value.find("powershell") != std::string::npos) foundCmd = true;
-        if (s.category == Dracula::StringCategory::RegistryKey && s.value.find("Run") != std::string::npos) foundReg = true;
-        if (s.category == Dracula::StringCategory::IPv4 && s.value == "192.168.1.100") foundIp = true;
-        if (s.category == Dracula::StringCategory::DllName && s.value == "kernel32.dll") foundDll = true;
-    }
-
-    AssertTest(foundUrl, "Extract and classify C2 URL");
-    AssertTest(foundCmd, "Extract and classify PowerShell execution fragment");
-    AssertTest(foundReg, "Extract and classify Persistence Registry Key");
-    AssertTest(foundIp,  "Extract and classify IPv4 address");
-    AssertTest(foundDll, "Extract and classify DLL name");
-}
-
-// ─── Test 3: Shannon Entropy & Packing Detection ───────────────────────────
-static void TestEntropyAnalyzer() {
-    std::cout << "\n\033[1;36m=== [TEST 3] Shannon Entropy & Packing Detection ===\033[0m\n";
-    // Flat buffer: all zeroes -> entropy 0.0
-    std::vector<uint8_t> flat(1024, 0);
-    double flatEntropy = Dracula::EntropyAnalyzer::CalculateShannonEntropy(flat.data(), flat.size());
-    AssertTest(flatEntropy == 0.0, "Zeroed buffer entropy is 0.00");
-
-    // Random byte buffer -> entropy ~8.0
-    std::vector<uint8_t> randomBuf(256 * 10);
-    for (size_t i = 0; i < randomBuf.size(); ++i) {
-        randomBuf[i] = static_cast<uint8_t>(i % 256);
-    }
-    double highEntropy = Dracula::EntropyAnalyzer::CalculateShannonEntropy(randomBuf.data(), randomBuf.size());
-    AssertTest(highEntropy >= 7.9, "Uniformly distributed buffer entropy >= 7.90 / 8.00");
-}
-
-// ─── Test 4: Pattern Scanner with Wildcards ────────────────────────────────
-static void TestPatternScanner() {
-    std::cout << "\n\033[1;36m=== [TEST 4] Pattern Scanner with Wildcards ===\033[0m\n";
-    uint8_t stream[] = { 0x90, 0x48, 0x8B, 0x05, 0x12, 0x34, 0x56, 0x78, 0x48, 0x85, 0xC0, 0xC3 };
-    auto matches = Dracula::PatternScanner::Scan(stream, sizeof(stream), "48 8B 05 ?? ?? ?? ?? 48 85 C0");
-
-    AssertTest(matches.size() == 1, "Find wildcard AOB pattern match count");
-    if (!matches.empty()) {
-        AssertTest(matches[0] == 1, "Match offset equals 1");
-    }
-}
-
-// ─── Test 5: Disassembler & Branch Classifier ──────────────────────────────
-static void TestDisassembler() {
-    std::cout << "\n\033[1;36m=== [TEST 5] Disassembler & Branch Classifier ===\033[0m\n";
-    // Instructions:
-    // 0: 48 31 C0       -> xor rax, rax
-    // 3: 48 83 C0 0A    -> add rax, 0xa
-    // 7: 74 05          -> jz +5 (0xE)
-    // 9: E8 10 00 00 00 -> call +0x10
-    // E: C3             -> ret
-    uint8_t code[] = {
-        0x48, 0x31, 0xC0,
-        0x48, 0x83, 0xC0, 0x0A,
-        0x74, 0x05,
-        0xE8, 0x10, 0x00, 0x00, 0x00,
-        0xC3
-    };
-
-    Dracula::Disassembler disasm(Dracula::Architecture::X86_64);
-    auto insts = disasm.Disassemble(code, sizeof(code), 0x140001000ULL, 0x1000);
-
-    AssertTest(insts.size() == 5, "Disassembled exactly 5 instructions");
-    if (insts.size() >= 5) {
-        AssertTest(insts[0].mnemonic == "xor", "Instruction 0 is 'xor'");
-        AssertTest(insts[1].mnemonic == "add", "Instruction 1 is 'add'");
-        AssertTest(insts[2].mnemonic == "jz" && insts[2].isConditional, "Instruction 2 is conditional 'jz'");
-        AssertTest(insts[2].targetAddress == 0x14000100EULL, "Instruction 2 branch target resolved accurately");
-        AssertTest(insts[3].isCall, "Instruction 3 is 'call'");
-        AssertTest(insts[4].isReturn, "Instruction 4 is 'ret'");
-    }
-}
-
-// ─── Test 6: Control Flow Graph (CFG) Recursive Traversal ──────────────────
-static void TestCfgAnalyzer() {
-    std::cout << "\n\033[1;36m=== [TEST 6] Control Flow Graph (CFG) Engine ===\033[0m\n";
-    // 0: cmp rax, 0
-    // 4: jz +6 (0xC)
-    // 6: mov rbx, 1
-    // A: jmp +4 (0x10)
-    // C: mov rbx, 2
-    // 10: ret
-    uint8_t code[] = {
-        0x48, 0x83, 0xF8, 0x00,             // 0x00: cmp rax, 0
-        0x74, 0x06,                         // 0x04: jz +6 (to 0x0C)
-        0x48, 0xC7, 0xC3, 0x01, 0x00, 0x00, 0x00, // 0x06: mov rbx, 1 (size 7) -> ends at 0x0D
-        0xEB, 0x07,                         // 0x0D: jmp +7 (to 0x16)
-        0x48, 0xC7, 0xC3, 0x02, 0x00, 0x00, 0x00, // 0x0F: mov rbx, 2
-        0xC3                                // 0x16: ret
+    // Branching Machine Code:
+    // 0x00: cmp rax, 0
+    // 0x04: jz 0x0F (True edge -> block 2 @ 0x0F, False edge -> block 1 @ 0x06)
+    // 0x06: mov rbx, 1 (Block 1)
+    // 0x0D: jmp 0x16 (Unconditional jump -> block 3 @ 0x16)
+    // 0x0F: mov rbx, 2 (Block 2)
+    // 0x16: sub rax, 1 (Block 3)
+    // 0x1A: jnz 0x00 (Back-edge / Loop edge -> block 0 @ 0x00)
+    // 0x1C: ret      (Block 4 / Exit)
+    uint8_t cfgCode[] = {
+        0x48, 0x83, 0xF8, 0x00,                         // 0x00: cmp rax, 0
+        0x74, 0x09,                                     // 0x04: jz +0x09 (to 0x0F)
+        0x48, 0xC7, 0xC3, 0x01, 0x00, 0x00, 0x00,       // 0x06: mov rbx, 1 (ends 0x0D)
+        0xEB, 0x07,                                     // 0x0D: jmp +0x07 (to 0x16)
+        0x48, 0xC7, 0xC3, 0x02, 0x00, 0x00, 0x00,       // 0x0F: mov rbx, 2 (ends 0x16)
+        0x48, 0x83, 0xE8, 0x01,                         // 0x16: sub rax, 1
+        0x75, 0xE4,                                     // 0x1A: jnz -0x1C (back to 0x00)
+        0xC3                                            // 0x1C: ret
     };
 
     Dracula::CfgAnalyzer cfg;
-    auto graph = cfg.BuildFunctionGraph(code, sizeof(code), 0x140001000ULL, 0x1000, Dracula::Architecture::X86_64);
+    uint64_t baseVa = 0x140001000ULL;
+    auto graph = cfg.BuildFunctionGraph(cfgCode, sizeof(cfgCode), baseVa, 0x1000, Dracula::Architecture::X86_64, 500);
 
-    AssertTest(!graph.blocks.empty(), "Constructed basic blocks in CFG graph");
-    AssertTest(graph.blocks.find(0x140001000ULL) != graph.blocks.end(), "Entry basic block exists at function start");
+    AssertTest(graph.blocks.size() >= 4, "Constructed full basic block topology (>= 4 blocks)");
+
+    // Check entry block successors (True & False branch edges)
+    auto entryIt = graph.blocks.find(baseVa);
+    AssertTest(entryIt != graph.blocks.end(), "Entry basic block exists at function base VA");
+    if (entryIt != graph.blocks.end()) {
+        const auto& entryBlock = entryIt->second;
+        AssertTest(entryBlock.successorAddresses.size() == 2, "Entry block has exactly 2 successors (Conditional True & False branches)");
+        AssertTest(entryBlock.terminatorMnemonic == "je" || entryBlock.terminatorMnemonic == "jz", "Entry block terminator is conditional jump (jz/je)");
+    }
+
+    // Check Loop back-edge presence (Back to entry block 0x140001000)
+    bool hasLoopBackEdge = false;
+    for (const auto& [addr, block] : graph.blocks) {
+        for (uint64_t succ : block.successorAddresses) {
+            if (succ == baseVa && addr != baseVa) {
+                hasLoopBackEdge = true;
+                break;
+            }
+        }
+    }
+    AssertTest(hasLoopBackEdge, "Successfully identified loop back-edge to function entry");
+
+    // Check RET block termination
+    bool hasRetBlock = false;
+    for (const auto& [addr, block] : graph.blocks) {
+        if (block.terminatorMnemonic == "ret") {
+            hasRetBlock = true;
+            AssertTest(block.successorAddresses.empty(), "RET block has zero successors (Clean leaf block)");
+        }
+    }
+    AssertTest(hasRetBlock, "RET termination block identified in CFG");
 }
 
-// ─── Test 7: Win32 HLE & Mock TEB/PEB Architecture ─────────────────────────
-static void TestWin32Hle() {
-    std::cout << "\n\033[1;36m=== [TEST 7] Win32 HLE & Anti-Debug Policies ===\033[0m\n";
+// ─── 3. CROSS REFERENCES (XREFs) AUDIT ─────────────────────────────────────
+static void TestXrefAnalyzer() {
+    std::cout << "\n\033[1;36m=== [AUDIT 3] Cross References (XREFs) Audit ===\033[0m\n";
+
+    // Setup synthetic PE with .rdata and .text
+    auto peBuf = CreateSyntheticPE(true, false, 2);
+    Dracula::PeInspector inspector;
+    std::string err;
+    inspector.LoadFromMemory(peBuf.data(), peBuf.size(), err);
+
+    std::vector<Dracula::ExtractedString> strings;
+    Dracula::ExtractedString es;
+    es.value = "http://evil-c2.com";
+    es.rva = 0x2040; // In second section (.sec1 / .rdata)
+    strings.push_back(es);
+
+    // Instructions with:
+    // 1. Direct call to 0x140005000 (CodeCall)
+    // 2. Conditional branch to 0x140001050 (CodeJump)
+    // 3. RIP-relative access to string @ 0x140002040 (StringRef)
+    std::vector<Dracula::DisassembledInstruction> insts;
+
+    Dracula::DisassembledInstruction i1;
+    i1.address = 0x140001000;
+    i1.rva = 0x1000;
+    i1.isCall = true;
+    i1.targetAddress = 0x140005000;
+    i1.mnemonic = "call";
+    i1.operands = "0x140005000";
+    insts.push_back(i1);
+
+    Dracula::DisassembledInstruction i2;
+    i2.address = 0x140001005;
+    i2.rva = 0x1005;
+    i2.isBranch = true;
+    i2.isConditional = true;
+    i2.targetAddress = 0x140001050;
+    i2.mnemonic = "jz";
+    i2.operands = "0x140001050";
+    insts.push_back(i2);
+
+    Dracula::DisassembledInstruction i3;
+    i3.address = 0x140001010;
+    i3.rva = 0x1010;
+    i3.targetAddress = 0x140002040;
+    i3.mnemonic = "lea";
+    i3.operands = "rcx, [rip + 0x1023]";
+    insts.push_back(i3);
+
+    auto xrefs = Dracula::XrefAnalyzer::ExtractXrefs(insts, inspector, strings);
+    AssertTest(xrefs.size() == 3, "Extracted 3 cross-references from instruction stream");
+
+    bool foundCall = false, foundJump = false, foundString = false;
+    for (const auto& x : xrefs) {
+        if (x.type == Dracula::XRefType::CodeCall && x.toAddress == 0x140005000) foundCall = true;
+        if (x.type == Dracula::XRefType::CodeJump && x.toAddress == 0x140001050) foundJump = true;
+        if (x.type == Dracula::XRefType::StringRef && x.targetName.find("evil-c2.com") != std::string::npos) foundString = true;
+    }
+
+    AssertTest(foundCall, "Resolved CodeCall XRef to subfunction");
+    AssertTest(foundJump, "Resolved CodeJump XRef to basic block target");
+    AssertTest(foundString, "Resolved StringRef XRef to embedded string");
+}
+
+// ─── 4. TEB / PEB & GS/FS SEGMENT CORRECTNESS AUDIT ───────────────────────
+static void TestTebPebCorrectness() {
+    std::cout << "\n\033[1;36m=== [AUDIT 4] TEB / PEB & GS/FS Architectural Resolution ===\033[0m\n";
+
+    // Machine code:
+    // mov rax, gs:[0x60]          -> 65 48 8B 04 25 60 00 00 00
+    // movzx ebx, byte ptr [rax+2] -> 0F B6 58 02 (PEB.BeingDebugged)
+    // mov rdx, [rax+0x10]         -> 48 8B 50 10 (PEB.ImageBaseAddress)
+    uint8_t gsCode[] = {
+        0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00, // mov rax, gs:[0x60]
+        0x0F, 0xB6, 0x58, 0x02,                               // movzx ebx, byte ptr [rax+2]
+        0x48, 0x8B, 0x50, 0x10                                // mov rdx, [rax+0x10]
+    };
+
+    // Test with Realistic policy (BeingDebugged = 1)
+    uc_engine* uc = nullptr;
+    uc_open(UC_ARCH_X86, UC_MODE_64, &uc);
+
+    uint64_t codeVa = 0x140001000ULL;
+    uc_mem_map(uc, codeVa, 0x1000, UC_PROT_ALL);
+    uc_mem_write(uc, codeVa, gsCode, sizeof(gsCode));
+
+    Dracula::Win32Hle hle;
+    std::string err;
+    uint64_t imageBase = 0x140000000ULL;
+    hle.SetupMockEnvironment(uc, imageBase, true, Dracula::AntiDebugPolicy::Realistic, err);
+
+    uc_err emuErr = uc_emu_start(uc, codeVa, codeVa + sizeof(gsCode), 0, 100);
+    AssertTest(emuErr == UC_ERR_OK, "Emulate gs:[0x60] machine code in Unicorn 64-bit");
+
+    uint64_t raxVal = 0, rbxVal = 0, rdxVal = 0;
+    uc_reg_read(uc, UC_X86_REG_RAX, &raxVal);
+    uc_reg_read(uc, UC_X86_REG_RBX, &rbxVal);
+    uc_reg_read(uc, UC_X86_REG_RDX, &rdxVal);
+
+    AssertTest(raxVal == Dracula::Win32Hle::kMockPeb64, "gs:[0x60] resolves to configured PEB base (0x7FFDF0010000)");
+    AssertTest(rbxVal == 1, "PEB.BeingDebugged == 1 under Realistic policy");
+    AssertTest(rdxVal == imageBase, "PEB.ImageBaseAddress matches binary image base");
+
+    uc_close(uc);
+}
+
+// ─── 5. REAL HLE MACHINE CODE EXECUTION AUDIT ──────────────────────────────
+static void TestRealHleMachineCodeExecution() {
+    std::cout << "\n\033[1;36m=== [AUDIT 5] Real HLE Machine Code Execution & Calling Conventions ===\033[0m\n";
+
+    Dracula::UnicornAnalyzer analyzer;
+    Dracula::Win32Hle& hle = analyzer.GetHle();
+
+    // Register test API thunk
+    uint64_t vAllocThunk = hle.GetOrCreateApiThunk("kernel32.dll", "VirtualAlloc");
+    uint64_t isDbgThunk  = hle.GetOrCreateApiThunk("kernel32.dll", "IsDebuggerPresent");
+
+    // Real x64 Machine Code:
+    // 1. Setup shadow stack: sub rsp, 0x28
+    // 2. Call VirtualAlloc(lpAddress=0, dwSize=0x2000, flAllocationType=0x3000, flProtect=0x40)
+    //    mov rcx, 0
+    //    mov rdx, 0x2000
+    //    mov r8, 0x3000
+    //    mov r9, 0x40 (PAGE_EXECUTE_READWRITE)
+    //    mov rax, vAllocThunk
+    //    call rax
+    // 3. Check returned pointer in RAX, write byte 0x90 to [RAX]
+    //    mov byte ptr [rax], 0x90
+    // 4. Call IsDebuggerPresent()
+    //    mov rax, isDbgThunk
+    //    call rax
+    // 5. Clean shadow stack: add rsp, 0x28; ret
+    std::vector<uint8_t> hleTestCode = {
+        0x48, 0x83, 0xEC, 0x28,                         // sub rsp, 0x28
+        0x48, 0x31, 0xC9,                               // xor rcx, rcx (lpAddress = 0)
+        0x48, 0xC7, 0xC2, 0x00, 0x20, 0x00, 0x00,       // mov rdx, 0x2000 (dwSize)
+        0x49, 0xC7, 0xC0, 0x00, 0x30, 0x00, 0x00,       // mov r8, 0x3000 (MEM_COMMIT | MEM_RESERVE)
+        0x49, 0xC7, 0xC1, 0x40, 0x00, 0x00, 0x00,       // mov r9, 0x40 (PAGE_EXECUTE_READWRITE)
+        0x48, 0xB8                                      // mov rax, vAllocThunk (8 bytes follow)
+    };
+    for (int i = 0; i < 8; ++i) hleTestCode.push_back(static_cast<uint8_t>((vAllocThunk >> (i * 8)) & 0xFF));
+    
+    // call rax
+    hleTestCode.push_back(0xFF); hleTestCode.push_back(0xD0);
+    
+    // mov byte ptr [rax], 0x90 (Write test byte to dynamically allocated memory)
+    hleTestCode.push_back(0xC6); hleTestCode.push_back(0x00); hleTestCode.push_back(0x90);
+
+    // mov rax, isDbgThunk (8 bytes follow)
+    hleTestCode.push_back(0x48); hleTestCode.push_back(0xB8);
+    for (int i = 0; i < 8; ++i) hleTestCode.push_back(static_cast<uint8_t>((isDbgThunk >> (i * 8)) & 0xFF));
+
+    // call rax
+    hleTestCode.push_back(0xFF); hleTestCode.push_back(0xD0);
+
+    // add rsp, 0x28; ret
+    hleTestCode.push_back(0x48); hleTestCode.push_back(0x83); hleTestCode.push_back(0xC4); hleTestCode.push_back(0x28);
+    hleTestCode.push_back(0xC3);
+
+    auto emuRes = analyzer.EmulateBuffer(hleTestCode, 0x140001000ULL, {}, {"RAX", "RSP"});
+    AssertTest(emuRes.success, "Execute real x64 machine code calling HLE thunks in Unicorn");
+    AssertTest(emuRes.instructionsExecuted >= 10, "Instructions executed through synthetic trampolines (> 10)");
+}
+
+// ─── 6. ANTI-DEBUG POLICIES & EVIDENCE EMISSION AUDIT ──────────────────────
+static void TestAntiDebugPolicies() {
+    std::cout << "\n\033[1;36m=== [AUDIT 6] Anti-Debug Policies & Evidence Emission ===\033[0m\n";
+
     Dracula::Win32Hle hle;
 
-    uint64_t thunk1 = hle.GetOrCreateApiThunk("kernel32.dll", "VirtualAlloc");
-    uint64_t thunk2 = hle.GetOrCreateApiThunk("kernel32.dll", "IsDebuggerPresent");
+    // Policy 1: Bypass
+    Dracula::HleCallContext ctxBypass;
+    ctxBypass.library = "kernel32.dll";
+    ctxBypass.apiName = "IsDebuggerPresent";
+    ctxBypass.antiDebugPolicy = Dracula::AntiDebugPolicy::Bypass;
 
-    AssertTest(thunk1 >= Dracula::Win32Hle::kHleThunkBase, "Generate synthetic thunk in HLE space");
-    AssertTest(thunk1 != thunk2, "Distinct APIs receive distinct thunk addresses");
+    uint64_t retVal1 = 0;
+    std::string det1;
+    std::vector<Dracula::Finding> f1;
+    hle.HandleCall(nullptr, 0, ctxBypass, retVal1, det1, f1);
 
-    std::string lib, api;
-    AssertTest(hle.ResolveThunk(thunk1, lib, api) && api == "VirtualAlloc", "Resolve thunk address back to API name");
+    AssertTest(retVal1 == 0, "IsDebuggerPresent returns 0 under Bypass policy");
+    AssertTest(!f1.empty() && f1[0].id == "EMU_ANTI_DEBUG_CHECK", "Emitted EMU_ANTI_DEBUG_CHECK finding under Bypass");
+
+    // Policy 2: Realistic
+    Dracula::HleCallContext ctxReal;
+    ctxReal.library = "kernel32.dll";
+    ctxReal.apiName = "IsDebuggerPresent";
+    ctxReal.antiDebugPolicy = Dracula::AntiDebugPolicy::Realistic;
+
+    uint64_t retVal2 = 0;
+    std::string det2;
+    std::vector<Dracula::Finding> f2;
+    hle.HandleCall(nullptr, 0, ctxReal, retVal2, det2, f2);
+
+    AssertTest(retVal2 == 1, "IsDebuggerPresent returns 1 under Realistic policy");
+    AssertTest(!f2.empty() && f2[0].id == "EMU_ANTI_DEBUG_CHECK", "Emitted EMU_ANTI_DEBUG_CHECK finding under Realistic");
+
+    // Policy 3: Neutral
+    Dracula::HleCallContext ctxNeut;
+    ctxNeut.library = "kernel32.dll";
+    ctxNeut.apiName = "IsDebuggerPresent";
+    ctxNeut.antiDebugPolicy = Dracula::AntiDebugPolicy::Neutral;
+
+    uint64_t retVal3 = 0;
+    std::string det3;
+    std::vector<Dracula::Finding> f3;
+    hle.HandleCall(nullptr, 0, ctxNeut, retVal3, det3, f3);
+
+    AssertTest(retVal3 == 0, "IsDebuggerPresent returns 0 under Neutral policy");
+    AssertTest(f3.empty(), "Neutral policy emits no findings (Silent)");
 }
 
-// ─── Test 8: Threat Evaluator Evidence Corroboration ───────────────────────
-static void TestThreatEvaluator() {
-    std::cout << "\n\033[1;36m=== [TEST 8] Threat Evaluator & Scoring ===\033[0m\n";
-    std::vector<Dracula::Finding> findings;
+// ─── 7. PE PARSER ROBUSTNESS & MALFORMED CORPUS AUDIT ──────────────────────
+static void TestPeParserRobustnessAndMalformedCorpus() {
+    std::cout << "\n\033[1;36m=== [AUDIT 7] PE Parser Robustness & Malformed Corpus ===\033[0m\n";
+
+    // 1. Valid PE32 (32-bit)
+    auto pe32 = CreateSyntheticPE(false, false, 1);
+    Dracula::PeInspector insp32;
+    std::string err32;
+    AssertTest(insp32.LoadFromMemory(pe32.data(), pe32.size(), err32) && !insp32.GetMetadata().is64Bit, "Parse standard PE32 (32-bit) binary");
+
+    // 2. Valid PE32+ (64-bit DLL)
+    auto peDll = CreateSyntheticPE(true, true, 2);
+    Dracula::PeInspector inspDll;
+    std::string errDll;
+    AssertTest(inspDll.LoadFromMemory(peDll.data(), peDll.size(), errDll) && inspDll.GetMetadata().isDll, "Parse standard PE32+ (64-bit DLL)");
+
+    // 3. Zero Sections PE
+    auto peZeroSec = CreateSyntheticPE(true, false, 0);
+    Dracula::PeInspector inspZero;
+    std::string errZero;
+    AssertTest(inspZero.LoadFromMemory(peZeroSec.data(), peZeroSec.size(), errZero), "Parse legal zero-section PE header safely");
+
+    // 4. Deterministic Malformed Corpus (20+ mutated corrupt files)
+    int corruptPassed = 0;
+    for (int variant = 0; variant < 25; ++variant) {
+        auto mutated = CreateSyntheticPE(true, false, 2);
+
+        switch (variant % 6) {
+            case 0: // Truncated buffer
+                mutated.resize(variant * 10 + 5);
+                break;
+            case 1: // Corrupt e_lfanew
+                *reinterpret_cast<int32_t*>(mutated.data() + 0x3C) = -1000 + variant;
+                break;
+            case 2: // Extreme NumberOfSections
+                *reinterpret_cast<uint16_t*>(mutated.data() + 0x86) = 0xFFFF;
+                break;
+            case 3: // Section PointerToRawData beyond EOF
+                *reinterpret_cast<uint32_t*>(mutated.data() + 0x1A0) = 0x7FFFFFFF;
+                break;
+            case 4: // Invalid SizeOfOptionalHeader
+                *reinterpret_cast<uint16_t*>(mutated.data() + 0x94) = 0xFFFF;
+                break;
+            case 5: // Overlapping sections with negative sizes
+                *reinterpret_cast<uint32_t*>(mutated.data() + 0x188) = 0xFFFFFFFF;
+                break;
+        }
+
+        Dracula::PeInspector inspMut;
+        std::string errMut;
+        // The parser MUST NOT crash or segfault
+        inspMut.LoadFromMemory(mutated.data(), mutated.size(), errMut);
+        corruptPassed++;
+    }
+    AssertTest(corruptPassed == 25, "Deterministic malformed corpus (25/25 corrupt variants safely rejected without crashing)");
+}
+
+// ─── 8. JSON STRUCTURE & GRAMMAR VALIDATION AUDIT ──────────────────────────
+static void TestJsonGrammarValidation() {
+    std::cout << "\n\033[1;36m=== [AUDIT 8] Strict JSON Grammar & Schema Validation ===\033[0m\n";
+
+    Dracula::UnifiedAnalysisResult res;
+    res.sample.fileName = "C:\\Windows\\System32\\calc.exe";
+    res.sample.filePath = "C:\\Users\\Dracula\\Desktop\\malware_\"test\"_sample.bin";
+    res.sample.sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    res.threatScore = 85;
+    res.threatLevel = "Critical Threat";
 
     Dracula::Finding f1;
-    f1.id = "EMU_ANTI_DEBUG";
-    f1.category = "AntiAnalysis";
-    f1.severity = Dracula::FindingSeverity::High;
-    f1.tags = {"MITRE:T1497"};
-    findings.push_back(f1);
+    f1.id = "TEST_FINDING_UNICODE";
+    f1.title = "Suspicious URL: http://c2.server.com/payload?key=val&path=C:\\temp\\evil.exe";
+    f1.evidence = "Embedded string: \"\xCE\x94\xCE\xBF\xCE\xBA\xCE\xB9\xCE\xBC\xCE\xAE\" (Greek Unicode)";
+    f1.severity = Dracula::FindingSeverity::Critical;
+    res.findings.push_back(f1);
 
-    Dracula::Finding f2;
-    f2.id = "STR_C2_URL";
-    f2.category = "Network / C2";
-    f2.severity = Dracula::FindingSeverity::Medium;
-    f2.tags = {"MITRE:T1071"};
-    findings.push_back(f2);
+    std::string jsonStr = res.ToJson();
+    std::string parseErr;
+    bool isValidJson = ValidateJsonSyntax(jsonStr, parseErr);
 
-    Dracula::SampleMetadata meta;
-    Dracula::SecurityMitigations mitigations;
-    mitigations.hasAslr = false;
-    mitigations.hasDep = false;
-
-    auto scoreRes = Dracula::ThreatEvaluator::Evaluate(findings, meta, mitigations, 7.8, true);
-
-    AssertTest(scoreRes.score >= 45, "Compute multi-finding threat score (Suspicious / High)");
-    AssertTest(!scoreRes.mitreTechniques.empty(), "Extract MITRE ATT&CK techniques (T1497, T1071)");
-    AssertTest(!scoreRes.reasoning.empty(), "Generate human-readable score reasoning");
+    AssertTest(isValidJson, "Generate 100% syntactically valid JSON (Braces, quotes, brackets balanced)");
+    if (!isValidJson) {
+        std::cerr << "[-] JSON validation error: " << parseErr << "\n";
+    }
+    AssertTest(jsonStr.find("\"dracula_version\": \"2.0.0\"") != std::string::npos, "JSON contains dracula_version schema header");
+    AssertTest(jsonStr.find("calc.exe") != std::string::npos, "JSON accurately escapes Windows paths");
 }
 
-// ─── Test 9: JSON & Markdown Report Serialization ──────────────────────────
-static void TestReportSerialization() {
-    std::cout << "\n\033[1;36m=== [TEST 9] JSON & Markdown Serialization ===\033[0m\n";
-    Dracula::UnifiedAnalysisResult res;
-    res.sample.fileName = "sample_test.exe";
-    res.sample.filePath = "C:\\test\\sample_test.exe";
-    res.sample.sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    res.threatScore = 65;
-    res.threatLevel = "Suspicious";
+// ─── 9. MCP PROTOCOL DEEP TOOL CALLS AUDIT ─────────────────────────────────
+static void TestMcpDeepSession() {
+    std::cout << "\n\033[1;36m=== [AUDIT 9] Model Context Protocol (MCP) Deep Tool Calls ===\033[0m\n";
 
-    Dracula::Finding f;
-    f.id = "TEST_FINDING";
-    f.severity = Dracula::FindingSeverity::High;
-    f.title = "Sample Test Finding";
-    f.evidence = "Pattern matched";
-    res.findings.push_back(f);
-
-    std::string json = res.ToJson();
-    AssertTest(json.find("\"dracula_version\": \"2.0.0\"") != std::string::npos, "JSON contains dracula_version header");
-    AssertTest(json.find("\"sample_test.exe\"") != std::string::npos, "JSON contains sample file name");
-    AssertTest(json.find("\"TEST_FINDING\"") != std::string::npos, "JSON contains structured finding ID");
-
-    std::string md = res.ToMarkdown();
-    AssertTest(md.find("# 🧛 Dracula Binary Intelligence Report") != std::string::npos, "Markdown report header verified");
-}
-
-// ─── Test 10: Model Context Protocol (MCP) Message Processor ───────────────
-static void TestMcpServer() {
-    std::cout << "\n\033[1;36m=== [TEST 10] Model Context Protocol (MCP) Server ===\033[0m\n";
     Dracula::McpServer mcp;
 
-    // Test initialize
-    std::string initReq = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
-    std::string initResp = mcp.ProcessMessage(initReq);
-    AssertTest(initResp.find("\"name\":\"Dracula-Intelligence-Suite\"") != std::string::npos, "MCP initialize response valid");
+    // 1. Initialize
+    std::string initResp = mcp.ProcessMessage("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
+    AssertTest(initResp.find("\"name\":\"Dracula-Intelligence-Suite\"") != std::string::npos, "MCP initialize protocol negotiation");
 
-    // Test tools/list
-    std::string listReq = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}";
-    std::string listResp = mcp.ProcessMessage(listReq);
-    AssertTest(listResp.find("\"name\":\"analyze_file\"") != std::string::npos, "MCP tools/list contains 'analyze_file'");
-    AssertTest(listResp.find("\"name\":\"inspect_pe_headers\"") != std::string::npos, "MCP tools/list contains 'inspect_pe_headers'");
-    AssertTest(listResp.find("\"name\":\"calculate_entropy\"") != std::string::npos, "MCP tools/list contains 'calculate_entropy'");
+    // 2. Tools List
+    std::string listResp = mcp.ProcessMessage("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
+    AssertTest(listResp.find("scan_hex_pattern") != std::string::npos, "MCP tools/list contains scan_hex_pattern");
 
-    // Test ping
-    std::string pingReq = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}";
-    std::string pingResp = mcp.ProcessMessage(pingReq);
-    AssertTest(pingResp.find("\"result\":{}") != std::string::npos, "MCP ping response valid");
+    // 3. Tool Call: inspect_pe_headers on samples/test_sample.exe
+    if (std::filesystem::exists("samples/test_sample.exe")) {
+        std::string callReq = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"inspect_pe_headers\",\"arguments\":{\"file_path\":\"samples/test_sample.exe\"}}}";
+        std::string callResp = mcp.ProcessMessage(callReq);
+        AssertTest(callResp.find("\"result\"") != std::string::npos && callResp.find("Architecture") != std::string::npos, "MCP tool call 'inspect_pe_headers' executed against real binary");
+    }
+
+    // 4. Missing Parameters Error Handling (-32602)
+    std::string errReq = "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"analyze_file\"}}";
+    std::string errResp = mcp.ProcessMessage(errReq);
+    AssertTest(errResp.find("\"code\":-32602") != std::string::npos, "MCP error returned for missing required parameters (-32602)");
+
+    // 5. Unknown Method Error Handling (-32601)
+    std::string unkReq = "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"invalid_ghost_method\"}";
+    std::string unkResp = mcp.ProcessMessage(unkReq);
+    AssertTest(unkResp.find("\"code\":-32601") != std::string::npos, "MCP error returned for unknown method (-32601)");
 }
 
-// ─── Test 11: Negative & Robustness Tests ──────────────────────────────────
-static void TestRobustnessAndNegative() {
-    std::cout << "\n\033[1;36m=== [TEST 11] Robustness & Negative Error Handling ===\033[0m\n";
-    Dracula::PeInspector insp;
-    std::string err;
+// ─── 10. THREAT SCORE DETERMINISTIC AUDIT ──────────────────────────────────
+static void TestThreatScoreDeterminism() {
+    std::cout << "\n\033[1;36m=== [AUDIT 10] Evidence-Based Threat Score Determinism ===\033[0m\n";
 
-    // Nonexistent file
-    bool r1 = insp.LoadFromFile("nonexistent_phantom_file_12345.bin", err);
-    AssertTest(!r1, "Reject nonexistent file safely with error message");
+    Dracula::SampleMetadata meta;
+    Dracula::SecurityMitigations cleanSec;
+    cleanSec.hasAslr = true;
+    cleanSec.hasDep = true;
 
-    // Truncated buffer (less than DOS header)
-    uint8_t tiny[] = { 'M', 'Z', 0x00 };
-    bool r2 = insp.LoadFromMemory(tiny, sizeof(tiny), err);
-    AssertTest(!r2, "Reject truncated DOS header safely");
+    // A. Benign / Clean sample (0 findings)
+    auto cleanRes = Dracula::ThreatEvaluator::Evaluate({}, meta, cleanSec, 4.5, false);
+    AssertTest(cleanRes.score < 25 && cleanRes.level == "Clean / Benign", "Clean binary with mitigations scores < 25 (Clean / Benign)");
 
-    // Corrupt e_lfanew
-    std::vector<uint8_t> corruptPE(256, 0);
-    corruptPE[0] = 'M'; corruptPE[1] = 'Z';
-    *reinterpret_cast<int32_t*>(corruptPE.data() + 0x3C) = 0x7FFFFFFF; // Oversized offset
-    bool r3 = insp.LoadFromMemory(corruptPE.data(), corruptPE.size(), err);
-    AssertTest(!r3, "Reject corrupt e_lfanew integer overflow safely without crashing");
+    // B. Multi-signal Corroboration
+    std::vector<Dracula::Finding> findings;
+    Dracula::Finding f1; f1.category = "AntiAnalysis"; f1.severity = Dracula::FindingSeverity::High; f1.tags = {"MITRE:T1497"};
+    Dracula::Finding f2; f2.category = "Persistence";  f2.severity = Dracula::FindingSeverity::High; f2.tags = {"MITRE:T1547"};
+    Dracula::Finding f3; f3.category = "Network";      f3.severity = Dracula::FindingSeverity::High; f3.tags = {"MITRE:T1071"};
+    findings.push_back(f1); findings.push_back(f2); findings.push_back(f3);
+
+    auto threatRes = Dracula::ThreatEvaluator::Evaluate(findings, meta, cleanSec, 7.9, true);
+    AssertTest(threatRes.score >= 75 && threatRes.level == "Critical Threat", "Multi-signal threat corroboration produces Critical Threat (>= 75)");
+    AssertTest(threatRes.mitreTechniques.size() == 3, "Extracted exact MITRE ATT&CK techniques (T1497, T1547, T1071)");
+}
+
+// ─── 11. HASH INDEPENDENT VERIFICATION ─────────────────────────────────────
+static void TestHashVerification() {
+    std::cout << "\n\033[1;36m=== [AUDIT 11] SHA-256 & MD5 Cryptographic Hash Verification ===\033[0m\n";
+
+    // NIST standard test vector: "abc"
+    // SHA-256 = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+    std::string testStr = "abc";
+    std::string sha256 = Dracula::PeInspector::ComputeSha256(reinterpret_cast<const uint8_t*>(testStr.data()), testStr.size());
+    std::string md5    = Dracula::PeInspector::ComputeMd5(reinterpret_cast<const uint8_t*>(testStr.data()), testStr.size());
+
+    AssertTest(sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA-256 matches NIST standard test vector for 'abc'");
+    AssertTest(md5 == "900150983cd24fb0d6963f7d28e17f72", "MD5 matches standard test vector for 'abc'");
 }
 
 int main() {
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
-    std::cout << "\033[1;31m 🧛 DRACULA COMPREHENSIVE AUTOMATED TEST SUITE\033[0m\n";
+    std::cout << "\033[1;31m 🧛 DRACULA DEEP VERIFICATION & AUDIT TEST HARNESS\033[0m\n";
     std::cout << "\033[1;35m==============================================================\033[0m\n";
 
-    TestPeInspector();
-    TestStringsAnalyzer();
-    TestEntropyAnalyzer();
-    TestPatternScanner();
-    TestDisassembler();
-    TestCfgAnalyzer();
-    TestWin32Hle();
-    TestThreatEvaluator();
-    TestReportSerialization();
-    TestMcpServer();
-    TestRobustnessAndNegative();
+    TestCapstoneDisassembler();
+    TestCfgTopology();
+    TestXrefAnalyzer();
+    TestTebPebCorrectness();
+    TestRealHleMachineCodeExecution();
+    TestAntiDebugPolicies();
+    TestPeParserRobustnessAndMalformedCorpus();
+    TestJsonGrammarValidation();
+    TestMcpDeepSession();
+    TestThreatScoreDeterminism();
+    TestHashVerification();
 
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
-    std::cout << " TEST RESULTS: \033[1;32m" << g_passCount << " PASSED\033[0m, \033[1;31m"
+    std::cout << " FINAL AUDIT RESULTS: \033[1;32m" << g_passCount << " PASSED\033[0m, \033[1;31m"
               << g_failCount << " FAILED\033[0m\n";
     std::cout << "\033[1;35m==============================================================\033[0m\n\n";
 

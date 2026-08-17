@@ -38,6 +38,10 @@ namespace Dracula {
         // Structured findings generation
         std::vector<Finding> GenerateFindings() const;
 
+        // Static cryptographic hashing
+        static std::string ComputeSha256(const uint8_t* data, size_t size);
+        static std::string ComputeMd5(const uint8_t* data, size_t size);
+
     private:
         bool ParsePE(std::string& outError);
         void ComputeHashes();

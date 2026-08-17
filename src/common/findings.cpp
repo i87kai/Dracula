@@ -117,6 +117,7 @@ namespace Dracula {
         ss << "  \"imports_count\": " << imports.size() << ",\n";
         ss << "  \"exports_count\": " << exports.size() << ",\n";
         ss << "  \"strings_count\": " << strings.size() << ",\n";
+        ss << "  \"xrefs_count\": " << xrefs.size() << ",\n";
         ss << "  \"yara_matches\": [\n";
         for (size_t i = 0; i < yaraMatches.size(); ++i) {
             ss << "    \"" << EscapeJson(yaraMatches[i]) << "\"" << (i + 1 < yaraMatches.size() ? "," : "") << "\n";

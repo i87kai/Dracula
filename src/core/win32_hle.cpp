@@ -56,14 +56,23 @@ namespace Dracula {
     bool Win32Hle::SetupMockEnvironment(uc_engine* uc, uint64_t imageBase, bool is64Bit, AntiDebugPolicy policy, std::string& outError) {
         m_policy = policy;
 
-        // 1. Map Mock TEB & PEB Pages (0x7FFE0000 - 0x7FFE2000)
-        uc_err err = uc_mem_map(uc, kMockTebAddress, 0x2000, UC_PROT_READ | UC_PROT_WRITE);
+        uint64_t tebAddr = is64Bit ? kMockTeb64 : kMockTeb32;
+        uint64_t pebAddr = is64Bit ? kMockPeb64 : kMockPeb32;
+
+        // 1. Map Mock TEB & PEB Pages
+        uc_err err = uc_mem_map(uc, tebAddr, 0x1000, UC_PROT_READ | UC_PROT_WRITE);
         if (err != UC_ERR_OK && err != UC_ERR_MAP) {
-            outError = "Failed to map mock TEB/PEB pages: " + std::string(uc_strerror(err));
+            outError = "Failed to map mock TEB page: " + std::string(uc_strerror(err));
             return false;
         }
 
-        // 2. Map Synthetic HLE Thunk Space (0x7FFF80000000 - 0x7FFF80020000)
+        err = uc_mem_map(uc, pebAddr, 0x1000, UC_PROT_READ | UC_PROT_WRITE);
+        if (err != UC_ERR_OK && err != UC_ERR_MAP) {
+            outError = "Failed to map mock PEB page: " + std::string(uc_strerror(err));
+            return false;
+        }
+
+        // 2. Map Synthetic HLE Thunk Space
         err = uc_mem_map(uc, kHleThunkBase, 0x20000, UC_PROT_READ | UC_PROT_EXEC);
         if (err != UC_ERR_OK && err != UC_ERR_MAP) {
             outError = "Failed to map synthetic HLE thunk page: " + std::string(uc_strerror(err));
@@ -74,30 +83,42 @@ namespace Dracula {
         std::vector<uint8_t> retCode(0x20000, 0xC3);
         uc_mem_write(uc, kHleThunkBase, retCode.data(), retCode.size());
 
-        // 3. Construct Mock PEB
+        // 3. Construct Mock PEB Structure
         uint8_t pebBuf[0x1000] = {0};
         uint8_t beingDebugged = (policy == AntiDebugPolicy::Realistic) ? 1 : 0;
         pebBuf[0x02] = beingDebugged; // PEB.BeingDebugged
 
         if (is64Bit) {
             *reinterpret_cast<uint64_t*>(pebBuf + 0x10) = imageBase; // PEB.ImageBaseAddress
-            *reinterpret_cast<uint64_t*>(pebBuf + 0x20) = kMockTebAddress + 0x500; // ProcessParameters
+            *reinterpret_cast<uint64_t*>(pebBuf + 0x20) = tebAddr + 0x500; // PEB.ProcessParameters
+            if (policy == AntiDebugPolicy::Realistic) {
+                *reinterpret_cast<uint32_t*>(pebBuf + 0xBC) = 0x70; // PEB.NtGlobalFlag (FLG_HEAP_ENABLE_TAIL_CHECK | etc)
+            }
         } else {
             *reinterpret_cast<uint32_t*>(pebBuf + 0x08) = static_cast<uint32_t>(imageBase);
-            *reinterpret_cast<uint32_t*>(pebBuf + 0x10) = static_cast<uint32_t>(kMockTebAddress + 0x500);
+            *reinterpret_cast<uint32_t*>(pebBuf + 0x10) = static_cast<uint32_t>(tebAddr + 0x500);
+            if (policy == AntiDebugPolicy::Realistic) {
+                *reinterpret_cast<uint32_t*>(pebBuf + 0x68) = 0x70; // 32-bit NtGlobalFlag
+            }
         }
-        uc_mem_write(uc, kMockPebAddress, pebBuf, sizeof(pebBuf));
+        uc_mem_write(uc, pebAddr, pebBuf, sizeof(pebBuf));
 
-        // 4. Construct Mock TEB
+        // 4. Construct Mock TEB Structure
         uint8_t tebBuf[0x1000] = {0};
         if (is64Bit) {
-            *reinterpret_cast<uint64_t*>(tebBuf + 0x30) = kMockTebAddress; // TEB.Self
-            *reinterpret_cast<uint64_t*>(tebBuf + 0x60) = kMockPebAddress; // TEB.ProcessEnvironmentBlock (gs:[0x60])
+            *reinterpret_cast<uint64_t*>(tebBuf + 0x30) = tebAddr; // TEB.Self
+            *reinterpret_cast<uint64_t*>(tebBuf + 0x60) = pebAddr; // TEB.ProcessEnvironmentBlock (gs:[0x60])
+            
+            // Set GS_BASE register in Unicorn so gs:[offset] reads resolve accurately
+            uc_reg_write(uc, UC_X86_REG_GS_BASE, &tebAddr);
         } else {
-            *reinterpret_cast<uint32_t*>(tebBuf + 0x18) = static_cast<uint32_t>(kMockTebAddress);
-            *reinterpret_cast<uint32_t*>(tebBuf + 0x30) = static_cast<uint32_t>(kMockPebAddress); // (fs:[0x30])
+            *reinterpret_cast<uint32_t*>(tebBuf + 0x18) = static_cast<uint32_t>(tebAddr); // TEB.Self (fs:[0x18])
+            *reinterpret_cast<uint32_t*>(tebBuf + 0x30) = static_cast<uint32_t>(pebAddr); // (fs:[0x30])
+
+            // Set FS_BASE register in Unicorn for x86
+            uc_reg_write(uc, UC_X86_REG_FS_BASE, &tebAddr);
         }
-        uc_mem_write(uc, kMockTebAddress, tebBuf, sizeof(tebBuf));
+        uc_mem_write(uc, tebAddr, tebBuf, sizeof(tebBuf));
 
         return true;
     }
@@ -218,18 +239,20 @@ namespace Dracula {
                << (ctx.antiDebugPolicy == AntiDebugPolicy::Bypass ? "Bypass" : (ctx.antiDebugPolicy == AntiDebugPolicy::Realistic ? "Realistic" : "Neutral")) << ")";
             outDetails = ss.str();
 
-            Finding f;
-            f.id = "EMU_ANTI_DEBUG_CHECK";
-            f.category = "AntiAnalysis";
-            f.severity = FindingSeverity::Medium;
-            f.confidence = FindingConfidence::High;
-            f.rva = ctx.callerRva;
-            f.title = "Anti-Debugging Check (IsDebuggerPresent)";
-            f.description = "Emulated code checked for active debugger presence via IsDebuggerPresent API.";
-            f.evidence = "Returned " + std::to_string(retVal) + " under " + (ctx.antiDebugPolicy == AntiDebugPolicy::Bypass ? "Bypass" : "Realistic") + " policy";
-            f.source = "Win32 HLE";
-            f.tags = {"AntiDebug", "MITRE:T1497"};
-            findings.push_back(f);
+            if (ctx.antiDebugPolicy != AntiDebugPolicy::Neutral) {
+                Finding f;
+                f.id = "EMU_ANTI_DEBUG_CHECK";
+                f.category = "AntiAnalysis";
+                f.severity = FindingSeverity::Medium;
+                f.confidence = FindingConfidence::High;
+                f.rva = ctx.callerRva;
+                f.title = "Anti-Debugging Check (IsDebuggerPresent)";
+                f.description = "Emulated code checked for active debugger presence via IsDebuggerPresent API.";
+                f.evidence = "Returned " + std::to_string(retVal) + " under " + (ctx.antiDebugPolicy == AntiDebugPolicy::Bypass ? "Bypass" : "Realistic") + " policy";
+                f.source = "Win32 HLE";
+                f.tags = {"AntiDebug", "MITRE:T1497"};
+                findings.push_back(f);
+            }
 
             return retVal;
         });
@@ -341,6 +364,54 @@ namespace Dracula {
         RegisterApi("msvcrt.dll", "putchar", crtPrintHandler);
         RegisterApi("msvcrt.dll", "__main", [](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
             return 0;
+        });
+        RegisterApi("msvcrt.dll", "setvbuf", [](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
+            outDetails = "setvbuf stream buffer set";
+            return 0;
+        });
+        RegisterApi("msvcrt.dll", "atexit", [](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
+            outDetails = "atexit registered exit callback";
+            return 0;
+        });
+        RegisterApi("msvcrt.dll", "__cxa_atexit", [](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
+            outDetails = "__cxa_atexit registered exit callback";
+            return 0;
+        });
+        RegisterApi("msvcrt.dll", "signal", [](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
+            outDetails = "signal handler installed";
+            return 0;
+        });
+        RegisterApi("msvcrt.dll", "memset", [](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
+            uint64_t dest = ctx.args.size() > 0 ? ctx.args[0] : 0;
+            uint8_t val = ctx.args.size() > 1 ? static_cast<uint8_t>(ctx.args[1]) : 0;
+            size_t count = ctx.args.size() > 2 ? static_cast<size_t>(ctx.args[2]) : 0;
+            if (dest != 0 && count > 0 && count < 0x100000) {
+                std::vector<uint8_t> fill(count, val);
+                uc_mem_write(uc, dest, fill.data(), count);
+            }
+            return dest;
+        });
+        RegisterApi("msvcrt.dll", "memcpy", [](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
+            uint64_t dest = ctx.args.size() > 0 ? ctx.args[0] : 0;
+            uint64_t src = ctx.args.size() > 1 ? ctx.args[1] : 0;
+            size_t count = ctx.args.size() > 2 ? static_cast<size_t>(ctx.args[2]) : 0;
+            if (dest != 0 && src != 0 && count > 0 && count < 0x100000) {
+                std::vector<uint8_t> buf(count);
+                if (uc_mem_read(uc, src, buf.data(), count) == UC_ERR_OK) {
+                    uc_mem_write(uc, dest, buf.data(), count);
+                }
+            }
+            return dest;
+        });
+        RegisterApi("msvcrt.dll", "strlen", [](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
+            uint64_t strPtr = ctx.args.size() > 0 ? ctx.args[0] : 0;
+            if (strPtr == 0) return 0;
+            uint64_t len = 0;
+            char c = 0;
+            while (len < 4096 && uc_mem_read(uc, strPtr + len, &c, 1) == UC_ERR_OK && c != 0) {
+                len++;
+            }
+            return len;
         });
         RegisterApi("msvcrt.dll", "abort", [](uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& findings) -> uint64_t {
             outDetails = "CRT abort requested clean termination";

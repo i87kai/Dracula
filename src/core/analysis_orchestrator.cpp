@@ -1,5 +1,6 @@
 #include "core/analysis_orchestrator.h"
 #include "core/dynamic_vm_analyzer.h"
+#include "core/xref_analyzer.h"
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -119,6 +120,11 @@ namespace Dracula {
                 auto fg = cfgAnalyzer.BuildFunctionGraph(inspector.GetBuffer() + epOffset, epCodeSize, epVa, res.sample.entryPointRva, arch, 500);
                 fg.name = "EntryPoint";
                 res.functions.push_back(fg);
+
+                // Disassemble and extract cross references
+                Disassembler disasm(arch);
+                auto instructions = disasm.Disassemble(inspector.GetBuffer() + epOffset, epCodeSize, epVa, res.sample.entryPointRva);
+                res.xrefs = XrefAnalyzer::ExtractXrefs(instructions, inspector, res.strings);
             }
         }
 

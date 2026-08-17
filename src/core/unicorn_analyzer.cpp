@@ -447,6 +447,47 @@ namespace Dracula {
             uc_reg_write(uc, reg, &val);
         }
 
+        // Setup Mock TEB/PEB and HLE Thunk space
+        std::string hleErr;
+        m_hle.SetupMockEnvironment(uc, baseAddress, is64Bit, AntiDebugPolicy::Bypass, hleErr);
+
+        struct BufferHookCtx {
+            UnicornAnalyzer* self;
+            bool is64;
+        } bCtx = { this, is64Bit };
+
+        uc_hook hleHook = 0;
+        uc_hook_add(uc, &hleHook, UC_HOOK_CODE, reinterpret_cast<void*>(+[](uc_engine* u, uint64_t addr, uint32_t sz, void* user){
+            auto* ctx = static_cast<BufferHookCtx*>(user);
+            if (addr >= Win32Hle::kHleThunkBase && addr < Win32Hle::kHleThunkBase + 0x20000) {
+                std::string lib, api;
+                if (ctx->self->GetHle().ResolveThunk(addr, lib, api)) {
+                    HleCallContext hCtx;
+                    hCtx.library = lib;
+                    hCtx.apiName = api;
+                    hCtx.is64Bit = ctx->is64;
+                    if (ctx->is64) {
+                        uint64_t rcx = 0, rdx = 0, r8 = 0, r9 = 0;
+                        uc_reg_read(u, UC_X86_REG_RCX, &rcx);
+                        uc_reg_read(u, UC_X86_REG_RDX, &rdx);
+                        uc_reg_read(u, UC_X86_REG_R8, &r8);
+                        uc_reg_read(u, UC_X86_REG_R9, &r9);
+                        hCtx.args = { rcx, rdx, r8, r9 };
+                    }
+                    uint64_t ret = 0;
+                    std::string details;
+                    std::vector<Finding> f;
+                    ctx->self->GetHle().HandleCall(u, addr, hCtx, ret, details, f);
+                    if (ctx->is64) {
+                        uc_reg_write(u, UC_X86_REG_RAX, &ret);
+                    } else {
+                        uint32_t ret32 = static_cast<uint32_t>(ret);
+                        uc_reg_write(u, UC_X86_REG_EAX, &ret32);
+                    }
+                }
+            }
+        }), &bCtx, Win32Hle::kHleThunkBase, Win32Hle::kHleThunkBase + 0x20000);
+
         uint64_t instrCount = 0;
         uc_hook countHook = 0;
         uc_hook_add(uc, &countHook, UC_HOOK_CODE, reinterpret_cast<void*>(+[](uc_engine* u, uint64_t addr, uint32_t sz, void* user){
