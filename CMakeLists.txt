@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
-project(Dracula VERSION 1.0.0 LANGUAGES C CXX RC)
+
+# ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
+# include/common/version.h is GENERATED from this declaration. Never hard-code
+# a version anywhere else in the tree.
+project(Dracula VERSION 1.0.1 LANGUAGES C CXX RC)
+
+set(DRACULA_RELEASE_DATE "2026-08-17")
+set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/common/version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/common/version.h
+    @ONLY
+)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +41,7 @@ add_subdirectory(third_party/capstone EXCLUDE_FROM_ALL)
 
 # ─── Include directories ────────────────────────────────────────────────────
 include_directories(
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/capstone/include
@@ -37,6 +51,7 @@ include_directories(
 set(DRACULA_CORE_SOURCES
     src/common/config.cpp
     src/common/findings.cpp
+    src/common/paths.cpp
     src/core/analysis_orchestrator.cpp
     src/core/pe_inspector.cpp
     src/core/entropy_analyzer.cpp
@@ -56,6 +71,10 @@ set(DRACULA_CORE_SOURCES
     src/host/console_ui.cpp
     src/host/process_inspector.cpp
     src/cli/terminal.cpp
+    src/cli/text_layout.cpp
+    src/cli/ui.cpp
+    src/cli/ascii_art.cpp
+    src/cli/startup_card.cpp
     src/cli/command_registry.cpp
     src/cli/line_editor.cpp
     src/cli/dracula_shell.cpp
@@ -65,6 +84,7 @@ set(DRACULA_CORE_SOURCES
 # Static Core Library for tests and embedding
 add_library(DraculaCore STATIC ${DRACULA_CORE_SOURCES})
 target_include_directories(DraculaCore PUBLIC
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/capstone/include
@@ -124,4 +144,9 @@ if(BUILD_TESTS)
     add_executable(test_dracula_suite tests/test_dracula_suite.cpp)
     target_link_libraries(test_dracula_suite PRIVATE DraculaCore)
     add_test(NAME DraculaTestSuite COMMAND test_dracula_suite)
+
+    # 3. Terminal layout / startup card / palette rendering suite
+    add_executable(test_terminal_ui tests/test_terminal_ui.cpp)
+    target_link_libraries(test_terminal_ui PRIVATE DraculaCore)
+    add_test(NAME TerminalUi COMMAND test_terminal_ui)
 endif()

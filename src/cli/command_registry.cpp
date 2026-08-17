@@ -199,10 +199,10 @@ namespace Dracula {
             .usage = "/strings [file] [min_length]",
             .category = "Inspection",
             .detailedHelp = "Extracts strings with category classification (URLs, IPs, file paths, registry keys, DLLs, suspicious commands).",
-            .examples = {"/strings", "/strings sample.exe 6"},
+            .examples = {"/strings", "/strings sample.exe 6", "/strings --all"},
             .takesFilePath = true,
             .requiresArgs = false,
-            .argCompletions = {},
+            .argCompletions = {"--all"},
             .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
                 shell.HandleStrings(args);
             }
@@ -236,7 +236,8 @@ namespace Dracula {
             .examples = {"/emulate", "/emulate sample.exe", "/emulate sample.exe --policy bypass"},
             .takesFilePath = true,
             .requiresArgs = false,
-            .argCompletions = {"--policy", "bypass", "realistic", "neutral"},
+            .argCompletions = {"--policy"},
+            .flagCompletions = {{"--policy", {"bypass", "realistic", "neutral"}}},
             .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
                 shell.HandleEmulate(args);
             }

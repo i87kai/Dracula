@@ -6,16 +6,23 @@
 
 namespace Dracula {
 
+    // Semantic colour roles. Commands must never emit raw ANSI colour
+    // literals; every colour in Dracula is requested through a role so the
+    // palette stays consistent and --no-color works everywhere.
     enum class ColorRole {
-        Primary,     // Crimson / Dracula Red
-        Secondary,   // Cool Cyan / Aqua
-        Accent,      // Muted Purple / Violet
-        Success,     // Emerald Green
-        Warning,     // Amber / Yellow
-        Error,       // Bright Red
-        Muted,       // Cool Gray / Slate
-        Selection,   // Highlight / Inverted background
-        Border,      // Frame border
+        Title,       // Dracula wordmark - dark crimson
+        Primary,     // Blood red - primary accent
+        Secondary,   // Muted violet - secondary accent
+        Accent,      // Deep violet - section labels
+        Technical,   // Cool cyan - engines, versions, identifiers
+        Text,        // Soft white - normal body text
+        Muted,       // Gray - secondary information
+        Success,     // Restrained green
+        Warning,     // Amber
+        Error,       // Red
+        Info,        // Steel blue
+        Selection,   // High contrast selection background
+        Border,      // Dark gray frame border
         Command,     // Bold command text
         Description, // Soft description text
         Bold,        // Bold modifier
@@ -83,11 +90,47 @@ namespace Dracula {
 #endif
     };
 
+    // ─── Centralized redraw primitives ──────────────────────────────────────
+    //
+    // All cursor movement and line erasing goes through Console. No source file
+    // outside this class may emit raw "\033[A" / "\033[K" style sequences: that
+    // is how the previous implementation accumulated inconsistent redraw logic
+    // and left the cursor in a broken state.
+    //
+    class Console {
+    public:
+        static void HideCursor();
+        static void ShowCursor();
+
+        static void CarriageReturn();
+        static void ClearLine();          // erase the entire current line
+        static void ClearToEndOfScreen();
+        static void ClearScreen();        // clear + home
+
+        static void MoveUp(int lines);
+        static void MoveDown(int lines);
+        static void MoveRight(int columns);
+        static void MoveToColumn(int zeroBasedColumn);
+
+        // Reset colours, show the cursor and flush. Safe to call repeatedly.
+        static void ResetStyle();
+    };
+
     // RAII guard for terminal setup
     class TerminalGuard {
     public:
         TerminalGuard() { Terminal::Initialize(); }
-        ~TerminalGuard() { Terminal::Restore(); }
+        ~TerminalGuard() { Console::ResetStyle(); Terminal::Restore(); }
+    };
+
+    // RAII guard that hides the cursor for the duration of a redraw and always
+    // restores it, including when an exception unwinds through the caller.
+    class CursorGuard {
+    public:
+        CursorGuard() { Console::HideCursor(); }
+        ~CursorGuard() { Console::ShowCursor(); }
+        CursorGuard(const CursorGuard&) = delete;
+        CursorGuard& operator=(const CursorGuard&) = delete;
     };
 
 } // namespace Dracula

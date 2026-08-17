@@ -1,5 +1,7 @@
 #include "common/findings.h"
 #include "common/version.h"
+#include "cli/terminal.h"
+#include "cli/text_layout.h"
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
@@ -213,48 +215,85 @@ namespace Dracula {
     }
 
     std::string UnifiedAnalysisResult::ToAnsiSummary() const {
+        // Rendered through the semantic theme and the shared layout primitives.
+        // Previously this emitted hard-coded ANSI unconditionally, which leaked
+        // escape sequences into redirected files and ignored --no-color.
+        const std::string accent = Terminal::Color(ColorRole::Accent);
+        const std::string second = Terminal::Color(ColorRole::Secondary);
+        const std::string muted  = Terminal::Color(ColorRole::Muted);
+        const std::string body   = Terminal::Color(ColorRole::Text);
+        const std::string reset  = Terminal::Color(ColorRole::Reset);
+        const std::string border = Terminal::Color(ColorRole::Border);
+
+        const size_t ruleWidth = std::min<size_t>(72,
+            static_cast<size_t>(std::max(Terminal::GetWidth() - 2, 30)));
+        const size_t keyWidth = 22;
+
+        auto row = [&](const std::string& key, const std::string& value,
+                       const std::string& valueColor) {
+            return "  " + muted + Text::PadRight(key, keyWidth) + reset +
+                   valueColor + value + reset + "\n";
+        };
+
         std::ostringstream out;
-        out << "\033[1;36m======================================================================\033[0m\n";
-        out << "\033[1;31m 🧛 DRACULA BINARY ANALYSIS REPORT\033[0m\n";
-        out << "\033[1;36m======================================================================\033[0m\n";
-        out << " \033[1mSample:\033[0m       " << sample.fileName << " (" << sample.fileSize << " bytes)\n";
-        out << " \033[1mArchitecture:\033[0m " << sample.architecture << " | \033[1mSubsystem:\033[0m " << sample.subsystem << "\n";
-        out << " \033[1mSHA-256:\033[0m      " << sample.sha256 << "\n";
-        out << " \033[1mEntropy:\033[0m      " << std::fixed << std::setprecision(2) << overallEntropy << "/8.00 "
-            << (isPacked ? "\033[1;33m[PACKED / ENCRYPTED]\033[0m" : "\033[32m[NORMAL]\033[0m") << "\n";
+        out << "\n" << accent << "Analysis Summary" << reset
+            << muted << "   " << sample.fileName << reset << "\n"
+            << border << Text::HorizontalRule(ruleWidth) << reset << "\n";
 
-        out << " \033[1mThreat Score:\033[0m ";
-        if (threatScore >= 75) {
-            out << "\033[1;91m" << threatScore << "/100 [CRITICAL]\033[0m\n";
-        } else if (threatScore >= 45) {
-            out << "\033[1;93m" << threatScore << "/100 [SUSPICIOUS]\033[0m\n";
-        } else {
-            out << "\033[1;92m" << threatScore << "/100 [CLEAN / BENIGN]\033[0m\n";
-        }
+        out << row("Sample", sample.filePath.empty() ? sample.fileName : sample.filePath, body);
+        out << row("Size", std::to_string(sample.fileSize) + " bytes", body);
+        out << row("Architecture", sample.architecture + "   " + sample.subsystem, body);
+        out << row("SHA-256", sample.sha256, body);
 
-        out << "\n \033[1;35m--- Security Mitigations ---\033[0m\n";
-        out << "   ASLR: " << (mitigations.hasAslr ? "\033[32mON\033[0m" : "\033[31mOFF\033[0m")
-            << " | DEP: " << (mitigations.hasDep ? "\033[32mON\033[0m" : "\033[31mOFF\033[0m")
-            << " | CFG: " << (mitigations.hasCfg ? "\033[32mON\033[0m" : "\033[33mOFF\033[0m")
-            << " | SEH: " << (mitigations.hasSeh ? "\033[32mON\033[0m" : "\033[33mOFF\033[0m")
-            << " | Signature: " << (mitigations.hasAuthenticode ? "\033[32mSIGNED\033[0m" : "\033[33mUNSIGNED\033[0m") << "\n";
+        std::ostringstream entropyText;
+        entropyText << std::fixed << std::setprecision(2) << overallEntropy << " / 8.00";
+        out << row("Entropy", entropyText.str(), body);
+        out << row("Packing", isPacked ? "Packed or encrypted" : "Normal",
+                   Terminal::Color(isPacked ? ColorRole::Warning : ColorRole::Success));
+
+        ColorRole scoreRole = ColorRole::Success;
+        std::string verdict = "Benign";
+        if (threatScore >= 75)      { scoreRole = ColorRole::Error;   verdict = "Critical"; }
+        else if (threatScore >= 45) { scoreRole = ColorRole::Warning; verdict = "Suspicious"; }
+        out << row("Threat score",
+                   std::to_string(threatScore) + " / 100   " + verdict,
+                   Terminal::Color(scoreRole));
+
+        out << "\n  " << second << "Mitigations" << reset << "\n";
+        auto mitigation = [&](const char* name, bool enabled, bool criticalWhenOff) {
+            ColorRole role = enabled ? ColorRole::Success
+                                     : (criticalWhenOff ? ColorRole::Error : ColorRole::Warning);
+            return "  " + muted + Text::PadRight(name, keyWidth) + reset +
+                   Terminal::Color(role) + (enabled ? "Enabled" : "Disabled") + reset + "\n";
+        };
+        out << mitigation("ASLR", mitigations.hasAslr, true);
+        out << mitigation("DEP / NX", mitigations.hasDep, true);
+        out << mitigation("Control Flow Guard", mitigations.hasCfg, false);
+        out << mitigation("SEH", mitigations.hasSeh, false);
+        out << row("Authenticode", mitigations.hasAuthenticode ? "Signed" : "Unsigned",
+                   Terminal::Color(mitigations.hasAuthenticode ? ColorRole::Success
+                                                               : ColorRole::Warning));
 
         if (!findings.empty()) {
-            out << "\n \033[1;33m--- Key Findings (" << findings.size() << ") ---\033[0m\n";
+            out << "\n  " << second << "Findings (" << findings.size() << ")" << reset << "\n";
             for (const auto& f : findings) {
-                std::string col = "\033[37m";
-                if (f.severity == FindingSeverity::Critical) col = "\033[1;91m";
-                else if (f.severity == FindingSeverity::High) col = "\033[91m";
-                else if (f.severity == FindingSeverity::Medium) col = "\033[93m";
-                else if (f.severity == FindingSeverity::Low) col = "\033[94m";
-
-                out << "   " << col << "[" << SeverityToString(f.severity) << "]\033[0m "
-                    << "\033[1m" << f.title << "\033[0m (" << f.id << ")\n"
-                    << "       Evidence: " << f.evidence << "\n";
+                ColorRole role = ColorRole::Muted;
+                switch (f.severity) {
+                    case FindingSeverity::Critical:
+                    case FindingSeverity::High:   role = ColorRole::Error;   break;
+                    case FindingSeverity::Medium: role = ColorRole::Warning; break;
+                    case FindingSeverity::Low:    role = ColorRole::Info;    break;
+                    default:                      role = ColorRole::Muted;   break;
+                }
+                out << "  " << Terminal::Color(role)
+                    << Text::PadRight(SeverityToString(f.severity), 10) << reset
+                    << Terminal::Color(ColorRole::Command) << f.title << reset << "\n"
+                    << "  " << std::string(keyWidth - 12, ' ') << muted
+                    << f.evidence << reset << "\n";
             }
         }
 
-        out << "\033[1;36m======================================================================\033[0m\n";
+        out << "\n";
         return out.str();
     }
 

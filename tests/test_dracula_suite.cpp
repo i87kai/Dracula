@@ -655,17 +655,22 @@ static void TestHashVerification() {
 
 // ─── 12. VERSION AUTHORITATIVE CONSISTENCY AUDIT ───────────────────────────
 static void TestVersionConsistency() {
-    std::cout << "\n\033[1;36m=== [AUDIT 12] Authoritative Version v1.0.0 Baseline Consistency ===\033[0m\n";
+    std::cout << "\n\033[1;36m=== [AUDIT 12] Authoritative Single-Source Version Consistency ===\033[0m\n";
 
-    AssertTest(Dracula::Version::Major == 1, "Authoritative Version Major is 1");
-    AssertTest(Dracula::Version::Minor == 0, "Authoritative Version Minor is 0");
-    AssertTest(Dracula::Version::Patch == 0, "Authoritative Version Patch is 0");
-    AssertTest(std::string(Dracula::Version::String) == "1.0.0", "Authoritative Version String is 1.0.0");
-    AssertTest(Dracula::DraculaShell::GetVersion() == "1.0.0", "DraculaShell reports version 1.0.0");
+    // The version is generated from CMakeLists.txt; nothing here may hard-code
+    // it, so every assertion is made against the single generated source.
+    const std::string version = Dracula::Version::String;
+    const std::string composed = std::to_string(Dracula::Version::Major) + "." +
+                                 std::to_string(Dracula::Version::Minor) + "." +
+                                 std::to_string(Dracula::Version::Patch);
+
+    AssertTest(Dracula::Version::Major == 1, "Authoritative Version Major is 1 (Dracula v1 line)");
+    AssertTest(composed == version, "Version components agree with the version string");
+    AssertTest(Dracula::DraculaShell::GetVersion() == version, "DraculaShell reports the authoritative version");
 
     Dracula::UnifiedAnalysisResult res;
     std::string json = res.ToJson();
-    AssertTest(json.find("\"dracula_version\": \"1.0.0\"") != std::string::npos, "Analysis JSON serialization uses authoritative 1.0.0 version");
+    AssertTest(json.find("\"dracula_version\": \"" + version + "\"") != std::string::npos, "Analysis JSON serialization uses the authoritative version");
 }
 
 // ─── 13. TERMINAL THEME & CAPABILITIES AUDIT ───────────────────────────────

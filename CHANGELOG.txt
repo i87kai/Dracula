@@ -1,4 +1,57 @@
 ============================================================
+Dracula v1.0.1
+Release: 2026-08-17
+============================================================
+
+Added
+-----
+- Supplied Vampire Dracula ASCII artwork integrated as a compiled-in UI asset (src/cli/ascii_art.cpp), available to a released executable regardless of working directory.
+- Central terminal layout engine (cli/text_layout) providing ANSI-aware and UTF-8-aware VisibleWidth, StripAnsi, PadLeft/PadRight, Center, Truncate, Fit, Wrap, HorizontalRule, BoxBuilder, RenderColumns, and a reusable Table renderer.
+- Responsive startup card (cli/startup_card) with four layouts selected from the live terminal width: two-column (>=100), stacked (>=62), compact ASCII mark (>=44), and a minimal text fallback below that.
+- Semantic output layer (cli/ui) providing Success/Warning/Error/Info messages, sections, key/value rows, mitigation states, truncation footers, and usage guidance blocks.
+- Centralized console redraw primitives (Terminal::Console) for cursor movement, line clearing, screen clearing and style restoration, plus an RAII CursorGuard.
+- Path resolution module (common/paths) distinguishing the working directory, the executable directory and the install/resource root; CHANGELOG.txt is now resolved through it.
+- Command palette viewport with scrolling, category-ordered results, a position footer, and the selected command's usage shown inline.
+- Argument completion driven entirely by command registry metadata via the new flagCompletions field (for example /emulate --policy -> bypass|realistic|neutral).
+- Filesystem completion popup using the same interaction model as the slash palette, with directory listing, '..' segments, drive paths and automatic quoting for paths containing spaces.
+- /strings --all option and "Showing N of M" footers for long output.
+- Ctrl+L clears the screen while preserving the current input.
+- Dedicated terminal UI regression suite (tests/test_terminal_ui.cpp, CTest target TerminalUi) verifying measurement, box geometry, responsive layouts, artwork integrity, palette state transitions, completion, session reuse and version consistency at 40/50/60/80/100/120/160/200 columns.
+
+Changed
+-------
+- Startup presentation redesigned around the Vampire artwork with a two-column information block (version, build, engines, working directory) and a tips footer.
+- Dracula colour palette reworked to a darker, restrained 256-colour theme with new semantic roles: Title, Primary, Secondary, Accent, Technical, Text, Muted, Success, Warning, Error, Info, Selection, Border.
+- /help redesigned: commands grouped by category in a deliberate order (Analysis, Inspection, Emulation, Session, System) with descriptions aligned across all groups.
+- /help <command> now renders description, usage, aliases, arguments and examples generated from registry metadata.
+- Analysis output for /headers, /security, /imports, /exports, /strings, /entropy, /functions, /xrefs, /findings, /session, /emulate and /disasm rebuilt on the shared section, key/value and table renderers.
+- Missing arguments now render as guidance (reason, usage, example, tip) instead of a bare red error line; red is reserved for genuine failures.
+- /clear now clears the viewport and redraws a compact header while preserving the active analysis session and command history.
+- Prompt restyled and always terminated with a reset so console styling can never leak.
+- Command palette suggestions are ordered by category rank then name.
+- Version is now generated from the CMakeLists.txt project() declaration into include/common/version.h via version.h.in; the checked-in copy was removed so there is exactly one source of truth.
+
+Fixed
+-----
+- Fixed the broken startup banner border: padding was computed from std::string::size(), which counts UTF-8 bytes and ANSI escape bytes, so every line containing a bullet or colour code pushed the right-hand border out of alignment.
+- Fixed misplaced right-side vertical bars and uneven padding by generating every border through the single BoxBuilder implementation.
+- Fixed box width arithmetic that mixed outer width, inner width and padding inconsistently between the top rule, body rows and bottom rule.
+- Fixed the line editor cursor landing one column to the right of its true position after every redraw (an off-by-one in the cursor-forward escape).
+- Fixed palette artifacts caused by ad-hoc cursor escapes scattered through the line editor; redraw is now deterministic and erases exactly the rows it drew.
+- Fixed long input corrupting the prompt line by adding horizontal scrolling instead of allowing terminal wrapping.
+- Fixed interactive editing being disabled entirely under --no-color (the editor previously fell back to plain getline whenever colour was off).
+- Fixed the cursor being left hidden or the console left styled after Ctrl+C, Ctrl+D, exceptions or exit.
+- Fixed CHANGELOG.txt lookup depending on the current working directory, which failed when Dracula.exe was launched from outside the build tree.
+- Fixed --mcp initializing the terminal at all; MCP stdio output is now guaranteed free of terminal setup, colour and artwork.
+
+Verified
+--------
+- Clean Release build (GCC 16.1.0, Ninja, -O3) of DraculaCore, Dracula.exe, GuestAgent.exe, Capstone, test_dracula_suite.exe, test_emulate_buffer.exe and test_terminal_ui.exe with no warnings or errors.
+- Terminal UI suite and the full analysis-core audit suite pass with zero failures.
+- --version, --help and --analyze output verified to contain no ANSI escape sequences when redirected to a file.
+- --mcp stdout verified to remain pure JSON-RPC.
+
+============================================================
 Dracula v1.0.0
 Release: 2026-08-17
 ============================================================

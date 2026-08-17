@@ -8,6 +8,21 @@
 
 namespace Dracula {
 
+    // What the suggestion popup below the prompt is currently offering.
+    enum class SuggestionKind {
+        None,
+        Command,    // slash command palette
+        Argument,   // command-declared argument values
+        Path        // filesystem completion
+    };
+
+    struct Suggestion {
+        std::string value;        // text inserted when accepted
+        std::string label;        // text shown in the popup
+        std::string description;  // right-hand hint
+        std::string group;        // category, used for subtle grouping
+    };
+
     class LineEditor {
     public:
         LineEditor();
@@ -50,14 +65,35 @@ namespace Dracula {
         // Getters for inspection/testing
         const std::string& GetBuffer() const { return m_buffer; }
         size_t GetCursorPos() const { return m_cursorPos; }
-        bool IsPaletteActive() const { return m_paletteActive; }
-        size_t GetPaletteSelection() const { return m_paletteSelection; }
+        bool IsPaletteActive() const { return m_kind == SuggestionKind::Command; }
+        bool IsSuggestionActive() const { return m_kind != SuggestionKind::None; }
+        SuggestionKind GetSuggestionKind() const { return m_kind; }
+        size_t GetPaletteSelection() const { return m_selection; }
+        const std::vector<Suggestion>& GetSuggestions() const { return m_suggestions; }
         const std::vector<const CommandDefinition*>& GetFilteredCommands() const { return m_filteredCommands; }
+
+        // Visible viewport of the popup for the current selection.
+        static constexpr size_t kViewportRows = 8;
+        size_t ViewportOffset() const;
+
+        // Compose the popup rows for the current state. Pure - used by tests to
+        // verify rendering without a console attached.
+        std::vector<std::string> BuildPopupRows(size_t width) const;
 
     private:
         void Redraw(const std::string& prompt);
-        void ClearRenderedPalette();
+        void ErasePopup();
+        void SetSuggestions(SuggestionKind kind, std::vector<Suggestion> items);
+        void ClearSuggestions();
+        bool AcceptSuggestion();
+
+        // Completion sources
+        std::vector<Suggestion> CollectPathSuggestions(const std::string& partial) const;
+        std::vector<Suggestion> CollectArgumentSuggestions(const std::string& partial) const;
         std::string CompletePath(const std::string& partial);
+
+        // Current token under the cursor (start offset and text).
+        void CurrentToken(size_t& start, std::string& text) const;
 
         std::string m_buffer;
         size_t m_cursorPos = 0;
@@ -69,11 +105,16 @@ namespace Dracula {
         int m_historyIndex = -1;
         std::string m_savedCurrentLine;
 
-        // Slash palette state
-        bool m_paletteActive = false;
-        size_t m_paletteSelection = 0;
+        // Suggestion popup state
+        SuggestionKind m_kind = SuggestionKind::None;
+        size_t m_selection = 0;
+        std::vector<Suggestion> m_suggestions;
         std::vector<const CommandDefinition*> m_filteredCommands;
-        size_t m_renderedPaletteLines = 0;
+
+        // Number of rows currently drawn beneath the prompt line.
+        size_t m_renderedRows = 0;
+        // Horizontal scroll offset used when the input exceeds the line width.
+        size_t m_scrollOffset = 0;
     };
 
 } // namespace Dracula

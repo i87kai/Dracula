@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <utility>
 #include <functional>
 #include <memory>
 
@@ -19,7 +20,14 @@ namespace Dracula {
         std::vector<std::string> examples;
         bool takesFilePath = false;
         bool requiresArgs = false;
+
+        // Positional value suggestions offered on Tab (e.g. json / md / txt).
         std::vector<std::string> argCompletions;
+
+        // Values offered after a specific flag, e.g. --policy -> bypass|realistic|neutral.
+        // Argument completion is driven entirely by this metadata; the line
+        // editor contains no per-command special cases.
+        std::vector<std::pair<std::string, std::vector<std::string>>> flagCompletions;
         std::function<void(DraculaShell&, const std::vector<std::string>&)> handler;
     };
 

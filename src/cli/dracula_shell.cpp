@@ -1,6 +1,10 @@
 #include "cli/dracula_shell.h"
 #include "cli/terminal.h"
+#include "cli/text_layout.h"
+#include "cli/startup_card.h"
+#include "cli/ui.h"
 #include "common/version.h"
+#include "common/paths.h"
 #include "host/report_writer.h"
 #include "mcp/mcp_server.h"
 #include "core/pe_inspector.h"
@@ -21,11 +25,58 @@
 
 namespace Dracula {
 
-    static void StripQuotes(std::string& s) {
-        if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
-            s = s.substr(1, s.size() - 2);
+    namespace {
+
+        void StripQuotes(std::string& s) {
+            if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+                s = s.substr(1, s.size() - 2);
+            }
         }
-    }
+
+        std::string C(ColorRole role) { return Terminal::Color(role); }
+        std::string R() { return Terminal::Color(ColorRole::Reset); }
+
+        const CommandDefinition* Cmd(const std::string& name) {
+            return CommandRegistry::Instance().Find(name);
+        }
+
+        // Report a missing target file consistently for every inspection
+        // command, using the command's own registry metadata.
+        void ReportMissingTarget(const std::string& commandName) {
+            const auto* def = Cmd(commandName);
+            const std::string reason =
+                "No file given and no active sample. Run /analyze <file> first, "
+                "or pass a path.";
+            if (def) {
+                Ui::MissingArgument(*def, reason);
+            } else {
+                Ui::UsageHint(reason, "/" + commandName + " [file]");
+            }
+        }
+
+        std::string Hex(uint64_t v) {
+            std::ostringstream ss;
+            ss << "0x" << std::hex << v;
+            return ss.str();
+        }
+
+        std::string Fixed(double v, int precision = 2) {
+            std::ostringstream ss;
+            ss << std::fixed << std::setprecision(precision) << v;
+            return ss.str();
+        }
+
+        // Preferred display order for the command palette and /help.
+        int CategoryRank(const std::string& category) {
+            if (category == "Analysis")   return 0;
+            if (category == "Inspection") return 1;
+            if (category == "Emulation")  return 2;
+            if (category == "Session")    return 3;
+            if (category == "System")     return 4;
+            return 5;
+        }
+
+    } // namespace
 
     DraculaShell::DraculaShell() = default;
     DraculaShell::~DraculaShell() = default;
@@ -35,144 +86,170 @@ namespace Dracula {
     }
 
     void DraculaShell::PrintVersion() {
-        std::cout << Terminal::Color(ColorRole::Primary) << "Dracula v" << Version::String << Terminal::Color(ColorRole::Reset)
-                  << " (" << Version::BuildTarget << ")\n"
-                  << "Architecture: " << "x86_64\n"
-                  << "Build:        " << "Release\n"
-                  << "Release Date: " << Version::ReleaseDate << "\n"
-                  << "Engines:      Capstone 5.0.1 | Unicorn 2 | Win32 HLE | Safe PE | MCP Server\n";
+        std::cout << C(ColorRole::Title) << "Dracula v" << Version::String << R()
+                  << C(ColorRole::Muted) << "  " << Version::BuildTarget << R() << "\n\n";
+        Ui::KeyValue("Architecture", "x86_64");
+        Ui::KeyValue("Build", "Release");
+        Ui::KeyValue("Release date", Version::ReleaseDate);
+        Ui::KeyValue("Engines", "Capstone 5.0.1, Unicorn 2, Win32 HLE, Safe PE, MCP Server");
+        std::cout << "\n";
     }
 
     void DraculaShell::PrintBanner() {
-        int termWidth = Terminal::GetWidth();
-        int boxWidth = std::clamp(termWidth - 4, 48, 74);
-        int innerWidth = boxWidth - 4;
+        // Artwork belongs to a real console. When stdout is redirected the REPL
+        // announces itself with a single plain line instead.
+        if (!Terminal::IsInteractive()) {
+            PrintCompactHeader();
+            return;
+        }
 
-        std::string title = " Dracula ";
-        std::string line1 = "Binary Intelligence & Reverse Engineering Platform";
-        std::string line2 = std::string("v") + Version::String + " (" + Version::BuildTarget + ")";
-        std::string line3 = "Capstone 5.0 • Unicorn 2 • Safe PE • Win32 HLE • CFG • MCP";
+        const int width = Terminal::GetWidth();
+        for (const auto& line : StartupCard::Render(width, StartupInfo::Detect())) {
+            std::cout << line << "\n";
+        }
+        std::cout << std::flush;
+    }
 
-        std::string borderCol = Terminal::Color(ColorRole::Border);
-        std::string resetCol  = Terminal::Color(ColorRole::Reset);
-        std::string primCol   = Terminal::Color(ColorRole::Primary);
-        std::string secCol    = Terminal::Color(ColorRole::Secondary);
-        std::string mutCol    = Terminal::Color(ColorRole::Muted);
-        std::string cmdCol    = Terminal::Color(ColorRole::Command);
-
-        // Top border with embedded title
-        std::cout << "\n " << borderCol << Terminal::BoxTL() << Terminal::BoxH() << resetCol
-                  << primCol << title << resetCol
-                  << borderCol;
-        int topRemaining = boxWidth - 3 - static_cast<int>(title.size());
-        for (int i = 0; i < topRemaining; ++i) std::cout << Terminal::BoxH();
-        std::cout << Terminal::BoxTR() << resetCol << "\n";
-
-        // Line 1: Subtitle
-        std::cout << " " << borderCol << Terminal::BoxV() << resetCol << "  "
-                  << secCol << line1 << resetCol;
-        int pad1 = innerWidth - static_cast<int>(line1.size());
-        if (pad1 > 0) std::cout << std::string(pad1, ' ');
-        std::cout << " " << borderCol << Terminal::BoxV() << resetCol << "\n";
-
-        // Line 2: Version
-        std::cout << " " << borderCol << Terminal::BoxV() << resetCol << "  "
-                  << mutCol << line2 << resetCol;
-        int pad2 = innerWidth - static_cast<int>(line2.size());
-        if (pad2 > 0) std::cout << std::string(pad2, ' ');
-        std::cout << " " << borderCol << Terminal::BoxV() << resetCol << "\n";
-
-        // Line 3: Blank separator
-        std::cout << " " << borderCol << Terminal::BoxV() << resetCol
-                  << std::string(boxWidth - 2, ' ')
-                  << borderCol << Terminal::BoxV() << resetCol << "\n";
-
-        // Line 4: Capabilities
-        std::cout << " " << borderCol << Terminal::BoxV() << resetCol << "  "
-                  << mutCol << line3 << resetCol;
-        int pad3 = innerWidth - static_cast<int>(line3.size());
-        if (pad3 > 0) std::cout << std::string(pad3, ' ');
-        std::cout << " " << borderCol << Terminal::BoxV() << resetCol << "\n";
-
-        // Bottom border
-        std::cout << " " << borderCol << Terminal::BoxBL();
-        for (int i = 0; i < boxWidth - 2; ++i) std::cout << Terminal::BoxH();
-        std::cout << Terminal::BoxBR() << resetCol << "\n\n";
-
-        // Working directory & hint
-        try {
-            std::string cwd = std::filesystem::current_path().string();
-            std::cout << "  " << mutCol << "Working directory: " << resetCol << cwd << "\n";
-        } catch (...) {}
-
-        std::cout << "  " << mutCol << "Type " << resetCol
-                  << secCol << "/" << resetCol
-                  << mutCol << " for command palette " << resetCol
-                  << mutCol << Terminal::Bullet() << " " << resetCol
-                  << secCol << "/help" << resetCol
-                  << mutCol << " for command reference" << resetCol << "\n\n";
+    void DraculaShell::PrintCompactHeader() {
+        std::cout << "\n " << C(ColorRole::Title) << "Dracula" << R()
+                  << C(ColorRole::Muted) << "  v" << Version::String
+                  << "   " << Terminal::Bullet() << "   Type / to browse commands"
+                  << R() << "\n\n";
     }
 
     void DraculaShell::PrintHelp(const std::string& specificCommand) {
         auto& registry = CommandRegistry::Instance();
 
+        // ── Detailed help for one command ───────────────────────────────────
         if (!specificCommand.empty()) {
             const auto* cmd = registry.Find(specificCommand);
             if (!cmd) {
-                std::cerr << Terminal::Color(ColorRole::Error) << "[-] Unknown command: '" << specificCommand << "'\n" << Terminal::Color(ColorRole::Reset);
+                Ui::Error("Unknown command: '" + specificCommand + "'");
+                Ui::Note("Type /help for the full command reference.");
                 return;
             }
 
-            std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-            std::cout << " " << Terminal::Color(ColorRole::Primary) << "COMMAND: /" << cmd->name << Terminal::Color(ColorRole::Reset) << "\n";
-            std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-            std::cout << "  " << Terminal::Color(ColorRole::Muted) << "Category:    " << Terminal::Color(ColorRole::Reset) << cmd->category << "\n";
-            std::cout << "  " << Terminal::Color(ColorRole::Muted) << "Usage:       " << Terminal::Color(ColorRole::Secondary) << cmd->usage << Terminal::Color(ColorRole::Reset) << "\n";
-            if (!cmd->aliases.empty()) {
-                std::cout << "  " << Terminal::Color(ColorRole::Muted) << "Aliases:     " << Terminal::Color(ColorRole::Reset);
-                for (size_t i = 0; i < cmd->aliases.size(); ++i) {
-                    std::cout << "/" << cmd->aliases[i] << (i + 1 < cmd->aliases.size() ? ", " : "");
-                }
-                std::cout << "\n";
-            }
-            std::cout << "  " << Terminal::Color(ColorRole::Muted) << "Description: " << Terminal::Color(ColorRole::Reset) << cmd->description << "\n\n";
+            std::cout << "\n  " << C(ColorRole::Command) << "/" << cmd->name << R()
+                      << C(ColorRole::Muted) << "   " << cmd->category << R() << "\n\n";
+            std::cout << "  " << C(ColorRole::Text) << cmd->description << R() << "\n";
+
             if (!cmd->detailedHelp.empty()) {
-                std::cout << "  " << cmd->detailedHelp << "\n\n";
-            }
-            if (!cmd->examples.empty()) {
-                std::cout << "  " << Terminal::Color(ColorRole::Muted) << "Examples:\n" << Terminal::Color(ColorRole::Reset);
-                for (const auto& ex : cmd->examples) {
-                    std::cout << "    " << Terminal::Color(ColorRole::Secondary) << ex << Terminal::Color(ColorRole::Reset) << "\n";
-                }
                 std::cout << "\n";
+                for (const auto& line : Text::Wrap(cmd->detailedHelp, Ui::ContentWidth() - 2)) {
+                    std::cout << "  " << C(ColorRole::Muted) << line << R() << "\n";
+                }
             }
-            std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+
+            std::cout << "\n  " << C(ColorRole::Muted) << "Usage" << R() << "\n"
+                      << "    " << C(ColorRole::Technical) << cmd->usage << R() << "\n";
+
+            if (!cmd->aliases.empty()) {
+                std::string aliases;
+                for (size_t i = 0; i < cmd->aliases.size(); ++i) {
+                    if (i) aliases += ", ";
+                    aliases += "/" + cmd->aliases[i];
+                }
+                std::cout << "\n  " << C(ColorRole::Muted) << "Aliases" << R() << "\n"
+                          << "    " << C(ColorRole::Secondary) << aliases << R() << "\n";
+            }
+
+            // Arguments section, generated entirely from registry metadata.
+            std::vector<std::pair<std::string, std::string>> arguments;
+            if (cmd->takesFilePath) {
+                arguments.emplace_back("file", "Optional when an active sample exists");
+            }
+            {
+                // Positional values only: entries that are really flags are
+                // documented by their own row below.
+                std::string values;
+                for (const auto& v : cmd->argCompletions) {
+                    bool isFlag = false;
+                    for (const auto& [flag, _] : cmd->flagCompletions) {
+                        if (flag == v) isFlag = true;
+                    }
+                    if (isFlag) continue;
+                    if (!values.empty()) values += " | ";
+                    values += v;
+                }
+                if (!values.empty()) arguments.emplace_back("values", values);
+            }
+            for (const auto& [flag, values] : cmd->flagCompletions) {
+                std::string joined;
+                for (size_t i = 0; i < values.size(); ++i) {
+                    if (i) joined += " | ";
+                    joined += values[i];
+                }
+                arguments.emplace_back(flag, joined);
+            }
+
+            if (!arguments.empty()) {
+                std::cout << "\n  " << C(ColorRole::Muted) << "Arguments" << R() << "\n";
+                size_t nameCol = 0;
+                for (const auto& [name, _] : arguments) {
+                    nameCol = std::max(nameCol, Text::VisibleWidth(name));
+                }
+                nameCol += 3;
+                for (const auto& [name, detail] : arguments) {
+                    std::cout << "    " << C(ColorRole::Technical) << Text::PadRight(name, nameCol) << R()
+                              << C(ColorRole::Muted)
+                              << Text::Truncate(detail, Ui::ContentWidth() - nameCol - 6) << R() << "\n";
+                }
+            }
+
+            if (!cmd->examples.empty()) {
+                std::cout << "\n  " << C(ColorRole::Muted) << "Examples" << R() << "\n";
+                for (const auto& ex : cmd->examples) {
+                    std::cout << "    " << C(ColorRole::Technical) << ex << R() << "\n";
+                }
+            }
+            std::cout << "\n";
             return;
         }
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " " << Terminal::Color(ColorRole::Primary) << "DRACULA COMMAND REFERENCE" << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
+        // ── Grouped overview ────────────────────────────────────────────────
+        std::cout << "\n  " << C(ColorRole::Title) << "Dracula" << R()
+                  << C(ColorRole::Muted) << "  command reference   " << Terminal::Bullet()
+                  << "   v" << Version::String << R() << "\n";
 
         auto categories = registry.GetCategories();
+        std::sort(categories.begin(), categories.end(),
+                  [](const std::string& a, const std::string& b) {
+                      int ra = CategoryRank(a), rb = CategoryRank(b);
+                      return ra != rb ? ra < rb : a < b;
+                  });
+
+        // Align every description at the same column across all groups.
+        size_t nameWidth = 0;
+        for (const auto& cmd : registry.GetAllCommands()) {
+            nameWidth = std::max(nameWidth, Text::VisibleWidth("/" + cmd.name));
+        }
+        nameWidth += 3;
+
+        const size_t descWidth = Ui::ContentWidth() > nameWidth + 6
+                               ? Ui::ContentWidth() - nameWidth - 6
+                               : 20;
+
         for (const auto& cat : categories) {
-            std::cout << "\n " << Terminal::Color(ColorRole::Accent) << "--- " << cat << " ---" << Terminal::Color(ColorRole::Reset) << "\n";
-            auto cmds = registry.GetCommandsByCategory(cat);
-            for (const auto* cmd : cmds) {
-                std::string cmdName = "/" + cmd->name;
-                std::cout << "  " << Terminal::Color(ColorRole::Secondary) << std::setw(15) << std::left << cmdName << Terminal::Color(ColorRole::Reset)
-                          << " " << cmd->description << "\n";
+            std::cout << "\n  " << C(ColorRole::Accent) << cat << R() << "\n";
+            for (const auto* cmd : registry.GetCommandsByCategory(cat)) {
+                std::cout << "    "
+                          << C(ColorRole::Command)
+                          << Text::PadRight("/" + cmd->name, nameWidth) << R()
+                          << C(ColorRole::Muted)
+                          << Text::Truncate(cmd->description, descWidth) << R() << "\n";
             }
         }
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " " << Terminal::Color(ColorRole::Muted) << "Interactive Palette:" << Terminal::Color(ColorRole::Reset) << " Type " << Terminal::Color(ColorRole::Secondary) << "/" << Terminal::Color(ColorRole::Reset) << " to open palette, " << Terminal::Color(ColorRole::Secondary) << "Up/Down" << Terminal::Color(ColorRole::Reset) << " to navigate, " << Terminal::Color(ColorRole::Secondary) << "TAB" << Terminal::Color(ColorRole::Reset) << " to accept.\n";
-        std::cout << " " << Terminal::Color(ColorRole::Muted) << "Detailed Help:" << Terminal::Color(ColorRole::Reset) << " Type " << Terminal::Color(ColorRole::Secondary) << "/help <command>" << Terminal::Color(ColorRole::Reset) << " for specific syntax and examples.\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        std::cout << "\n  " << C(ColorRole::Muted) << "Type " << R()
+                  << C(ColorRole::Primary) << "/" << R()
+                  << C(ColorRole::Muted) << " to browse commands interactively   "
+                  << Terminal::Bullet() << "   " << R()
+                  << C(ColorRole::Technical) << "/help <command>" << R()
+                  << C(ColorRole::Muted) << " for details" << R() << "\n\n";
     }
 
     std::string DraculaShell::ResolveTargetFile(const std::vector<std::string>& args, size_t index) {
-        if (args.size() > index && !args[index].empty()) {
+        if (args.size() > index && !args[index].empty() && args[index].rfind("--", 0) != 0) {
             std::string path = args[index];
             StripQuotes(path);
             m_activeFile = path;
@@ -186,11 +263,46 @@ namespace Dracula {
         m_sessionResult = std::move(result);
     }
 
+    std::string DraculaShell::SessionStatusLine() const {
+        if (m_activeFile.empty()) return "";
+
+        std::string name;
+        try {
+            name = std::filesystem::path(m_activeFile).filename().string();
+        } catch (...) {
+            name = m_activeFile;
+        }
+        if (name.empty()) name = m_activeFile;
+
+        std::string line = "sample: " + name;
+        if (m_sessionResult) {
+            if (!m_sessionResult->sample.architecture.empty()) {
+                line += "  " + Terminal::Bullet() + "  " + m_sessionResult->sample.architecture;
+            }
+            line += "  " + Terminal::Bullet() + "  " +
+                    std::to_string(m_sessionResult->findings.size()) + " findings";
+            line += "  " + Terminal::Bullet() + "  score " +
+                    std::to_string(m_sessionResult->threatScore);
+        }
+        return line;
+    }
+
     int DraculaShell::RunInteractive() {
         PrintBanner();
         m_running = true;
 
+        std::string lastStatus;
+
         while (m_running) {
+            // Subtle, non-repeating session status directly above the prompt.
+            std::string status = SessionStatusLine();
+            if (!status.empty() && status != lastStatus) {
+                std::cout << " " << C(ColorRole::Muted)
+                          << Text::Truncate(status, Ui::ContentWidth())
+                          << R() << "\n";
+            }
+            lastStatus = status;
+
             std::string prompt = Terminal::DraculaPrompt();
             std::string line;
 
@@ -199,10 +311,20 @@ namespace Dracula {
             }
 
             if (line.empty()) continue;
-            ExecuteCommand(line);
+
+            try {
+                ExecuteCommand(line);
+            } catch (const std::exception& ex) {
+                Ui::Error(std::string("Command failed: ") + ex.what());
+            } catch (...) {
+                Ui::Error("Command failed with an unknown error.");
+            }
+            // Whatever a command printed, the console returns to a known state.
+            Console::ResetStyle();
         }
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Success) << "[+] Dracula session terminated cleanly. Goodbye!\n\n" << Terminal::Color(ColorRole::Reset);
+        Console::ResetStyle();
+        std::cout << "\n " << C(ColorRole::Muted) << "Session closed." << R() << "\n\n";
         return 0;
     }
 
@@ -247,32 +369,41 @@ namespace Dracula {
         if (cmdDef && cmdDef->handler) {
             cmdDef->handler(*this, args);
         } else {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Unknown command: '" << tokens[0] << "'. Type /help for reference.\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("Unknown command: '" + tokens[0] + "'");
+            Ui::Note("Type / to browse commands, or /help for the full reference.");
         }
 
         return true;
     }
 
+    // ─── Analysis ───────────────────────────────────────────────────────────
+
     void DraculaShell::HandleAnalyze(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /analyze <path/to/binary.exe>\n" << Terminal::Color(ColorRole::Reset);
+            const auto* def = Cmd("analyze");
+            if (def) {
+                Ui::MissingArgument(*def, "Missing target binary.",
+                                    "Pass a path to a PE file to start a session.");
+            }
             return;
         }
 
-        std::cout << Terminal::Color(ColorRole::Muted) << "[*] Running Dracula intelligence pipeline on " << file << "...\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Info("Running the Dracula pipeline on " + file);
+
         OrchestratorOptions opts;
         opts.enableEmulation = true;
         auto res = m_orchestrator.AnalyzeFile(file, opts);
 
         m_sessionResult = std::make_unique<UnifiedAnalysisResult>(res);
         std::cout << res.ToAnsiSummary();
+        Ui::Success("Active sample set to " + file);
     }
 
     void DraculaShell::HandleEmulate(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /emulate [file] [--policy bypass|realistic|neutral]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("emulate");
             return;
         }
 
@@ -281,7 +412,6 @@ namespace Dracula {
         opts.maxInstructions = 10000;
         opts.strictSandbox = false;
 
-        // Check for --policy argument
         for (size_t i = 0; i < args.size(); ++i) {
             if (args[i] == "--policy" && i + 1 < args.size()) {
                 std::string pol = args[i + 1];
@@ -294,45 +424,57 @@ namespace Dracula {
         std::vector<Finding> findings;
         auto res = emu.EmulatePE(file, opts, &findings);
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " " << Terminal::Color(ColorRole::Primary) << "UNICORN 2 CPU EMULATION EXECUTION" << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " Status:        " << (res.success ? (Terminal::Color(ColorRole::Success) + "OK") : (Terminal::Color(ColorRole::Error) + "FAULT / HALTED")) << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << " Stop Reason:   " << StopReasonToString(res.stopReason) << "\n";
-        std::cout << " Instructions:  " << res.instructionsExecuted << "\n";
-        std::cout << " Start Address: 0x" << std::hex << res.startAddress << "\n";
-        std::cout << " Stop Address:  0x" << std::hex << res.stopAddress << std::dec << "\n\n";
+        Ui::Section("CPU Emulation", "Unicorn 2");
+        Ui::KeyState("Status", res.success ? Ui::State::Good : Ui::State::Bad,
+                     res.success ? "Completed" : "Faulted / halted");
+        Ui::KeyValue("Stop reason", StopReasonToString(res.stopReason));
+        Ui::KeyValue("Instructions", Ui::Number(res.instructionsExecuted));
+        Ui::KeyValue("Start address", Hex(res.startAddress));
+        Ui::KeyValue("Stop address", Hex(res.stopAddress));
 
-        std::cout << " " << Terminal::Color(ColorRole::Command) << "Registers:\n" << Terminal::Color(ColorRole::Reset);
-        int col = 0;
-        for (const auto& [name, val] : res.registers) {
-            std::cout << "   " << std::setw(5) << name << ": 0x" << std::hex << std::setw(16) << std::setfill('0') << val << std::dec << "  ";
-            col++;
-            if (col % 2 == 0) std::cout << "\n";
+        if (!res.registers.empty()) {
+            Ui::Group("Registers");
+            Text::Table table({{"", 5, 6, false}, {"", 18, 18, false},
+                               {"", 5, 6, false}, {"", 18, 18, false}});
+            std::vector<std::string> pending;
+            for (const auto& [name, val] : res.registers) {
+                pending.push_back(name);
+                std::ostringstream ss;
+                ss << "0x" << std::hex << std::setw(16) << std::setfill('0') << val;
+                pending.push_back(ss.str());
+                if (pending.size() == 4) {
+                    table.AddRow(pending);
+                    pending.clear();
+                }
+            }
+            if (!pending.empty()) table.AddRow(pending);
+            Ui::Lines(table.Render(Ui::ContentWidth()));
         }
-        if (col % 2 != 0) std::cout << "\n";
 
         if (!res.hleCalls.empty()) {
-            std::cout << "\n " << Terminal::Color(ColorRole::Command) << "Win32 HLE Calls (" << res.hleCalls.size() << "):\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Group("Win32 HLE calls (" + std::to_string(res.hleCalls.size()) + ")");
+            Text::Table table({{"API", 24, 40, false},
+                               {"Return", 10, 20, false},
+                               {"Detail", 10, 0, false}});
             for (const auto& c : res.hleCalls) {
-                std::cout << "   " << Terminal::Color(ColorRole::Success) << c.library << "!" << c.apiName << Terminal::Color(ColorRole::Reset)
-                          << " -> Ret: 0x" << std::hex << c.returnValue << std::dec << " (" << c.details << ")\n";
+                table.AddRow({c.library + "!" + c.apiName, Hex(c.returnValue), c.details});
             }
+            Ui::Lines(table.Render(Ui::ContentWidth(), C(ColorRole::Muted), R()));
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleDisasm(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /disasm [file] [rva] [count]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("disasm");
             return;
         }
 
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] PE parse error: " << err << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("PE parse error: " + err);
             return;
         }
 
@@ -348,34 +490,39 @@ namespace Dracula {
 
         uint64_t fileOffset = inspector.RvaToFileOffset(targetRva);
         if (fileOffset >= inspector.GetBufferSize()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Invalid RVA 0x" << std::hex << targetRva << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("Invalid RVA " + Hex(targetRva) + " for this image.");
             return;
         }
 
         Disassembler disasm(inspector.GetMetadata().is64Bit ? Architecture::X86_64 : Architecture::X86_32);
         size_t codeSize = std::min<size_t>(count * 15, inspector.GetBufferSize() - fileOffset);
-        auto instructions = disasm.Disassemble(inspector.GetBuffer() + fileOffset, codeSize, inspector.GetMetadata().imageBase + targetRva, targetRva);
+        auto instructions = disasm.Disassemble(inspector.GetBuffer() + fileOffset, codeSize,
+                                               inspector.GetMetadata().imageBase + targetRva, targetRva);
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " DISASSEMBLY @ RVA 0x" << std::hex << targetRva << " (VA 0x" << (inspector.GetMetadata().imageBase + targetRva) << ")\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        for (size_t i = 0; i < std::min(count, instructions.size()); ++i) {
-            std::cout << Disassembler::FormatInstruction(instructions[i], Terminal::SupportsColor()) << "\n";
+        Ui::Section("Disassembly",
+                    "RVA " + Hex(targetRva) + "  " + Terminal::Bullet() + "  VA " +
+                    Hex(inspector.GetMetadata().imageBase + targetRva));
+
+        size_t shown = std::min(count, instructions.size());
+        for (size_t i = 0; i < shown; ++i) {
+            std::cout << "  " << Disassembler::FormatInstruction(instructions[i], Terminal::SupportsColor()) << "\n";
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Truncated(shown, instructions.size(), "instructions",
+                      "/disasm [file] [rva] [count]");
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleCfg(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /cfg [file] [rva]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("cfg");
             return;
         }
 
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] PE parse error: " << err << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("PE parse error: " + err);
             return;
         }
 
@@ -386,255 +533,330 @@ namespace Dracula {
 
         uint64_t fileOffset = inspector.RvaToFileOffset(targetRva);
         if (fileOffset >= inspector.GetBufferSize()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Invalid RVA 0x" << std::hex << targetRva << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("Invalid RVA " + Hex(targetRva) + " for this image.");
             return;
         }
 
         CfgAnalyzer cfg;
         Architecture arch = inspector.GetMetadata().is64Bit ? Architecture::X86_64 : Architecture::X86_32;
         size_t codeSize = std::min<size_t>(0x2000, inspector.GetBufferSize() - fileOffset);
-        auto graph = cfg.BuildFunctionGraph(inspector.GetBuffer() + fileOffset, codeSize, inspector.GetMetadata().imageBase + targetRva, targetRva, arch, 500);
+        auto graph = cfg.BuildFunctionGraph(inspector.GetBuffer() + fileOffset, codeSize,
+                                            inspector.GetMetadata().imageBase + targetRva,
+                                            targetRva, arch, 500);
 
+        Ui::Section("Control Flow Graph", "RVA " + Hex(targetRva));
         std::cout << CfgAnalyzer::RenderGraph(graph, Terminal::SupportsColor());
     }
+
+    // ─── Inspection ─────────────────────────────────────────────────────────
 
     void DraculaShell::HandleHeaders(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /headers [file]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("headers");
             return;
         }
 
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] PE parse error: " << err << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("PE parse error: " + err);
             return;
         }
 
         const auto& m = inspector.GetMetadata();
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " PE HEADERS & METADATA: " << m.fileName << "\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << "  File Size:     " << m.fileSize << " bytes\n";
-        std::cout << "  Architecture:  " << m.architecture << "\n";
-        std::cout << "  Subsystem:     " << m.subsystem << "\n";
-        std::cout << "  Image Base:    0x" << std::hex << m.imageBase << "\n";
-        std::cout << "  Entry Point:   0x" << std::hex << m.entryPointRva << " (VA: 0x" << (m.imageBase + m.entryPointRva) << ")\n";
-        std::cout << "  Sections:      " << std::dec << m.sectionCount << "\n";
-        std::cout << "  Is DLL:        " << (m.isDll ? "YES" : "NO") << "\n\n";
+        Ui::Section("PE Headers", m.fileName);
+        Ui::KeyValue("File size", Ui::Number(m.fileSize) + " bytes");
+        Ui::KeyValue("Architecture", m.architecture);
+        Ui::KeyValue("Subsystem", m.subsystem);
+        Ui::KeyValue("Image base", Hex(m.imageBase));
+        Ui::KeyValue("Entry point", Hex(m.entryPointRva) + "   VA " + Hex(m.imageBase + m.entryPointRva));
+        Ui::KeyValue("Sections", std::to_string(m.sectionCount));
+        Ui::KeyValue("Type", m.isDll ? "DLL" : "Executable");
 
-        std::cout << " " << Terminal::Color(ColorRole::Command) << "Section Table:\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << "  Name     VirtualAddr  VirtualSize  RawSize     Entropy   Perms\n";
-        std::cout << "  " << Terminal::DrawHorizontalLine(58) << "\n";
+        Ui::Group("Sections");
+        Text::Table table({{"Name", 8, 16, false},
+                           {"Virtual", 12, 14, false},
+                           {"VSize", 10, 12, false},
+                           {"RawSize", 10, 12, false},
+                           {"Entropy", 7, 9, true},
+                           {"Perms", 5, 6, false}});
         for (const auto& s : inspector.GetSections()) {
-            std::string p = "";
-            if (s.isReadable) p += "R";
-            if (s.isWritable) p += "W";
-            if (s.isExecutable) p += "X";
-            std::cout << "  " << std::setw(8) << std::left << s.name
-                      << " 0x" << std::hex << std::setw(10) << s.virtualAddress
-                      << " 0x" << std::setw(10) << s.virtualSize
-                      << " 0x" << std::setw(10) << s.rawSize << std::dec
-                      << " " << std::fixed << std::setprecision(2) << s.entropy
-                      << (s.isHighEntropy ? " [HIGH]" : "       ")
-                      << "  " << p << "\n";
+            std::string perms;
+            perms += s.isReadable ? "R" : "-";
+            perms += s.isWritable ? "W" : "-";
+            perms += s.isExecutable ? "X" : "-";
+            table.AddRow({s.name, Hex(s.virtualAddress), Hex(s.virtualSize),
+                          Hex(s.rawSize),
+                          Fixed(s.entropy) + (s.isHighEntropy ? "!" : " "),
+                          perms});
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Lines(table.Render(Ui::ContentWidth(), C(ColorRole::Muted), R()));
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleSecurity(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /security [file]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("security");
             return;
         }
 
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] PE parse error: " << err << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("PE parse error: " + err);
             return;
         }
 
         const auto& sec = inspector.GetMitigations();
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " SECURITY MITIGATION AUDIT\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << "  ASLR (Dynamic Base):        " << (sec.hasAslr ? (Terminal::Color(ColorRole::Success) + "[PASS] Enabled") : (Terminal::Color(ColorRole::Error) + "[FAIL] Disabled")) << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << "  High Entropy ASLR (64-bit):  " << (sec.hasHighEntropyAslr ? (Terminal::Color(ColorRole::Success) + "[PASS] Enabled") : (Terminal::Color(ColorRole::Warning) + "[WARN] Disabled")) << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << "  DEP / NX Compatibility:     " << (sec.hasDep ? (Terminal::Color(ColorRole::Success) + "[PASS] Enabled") : (Terminal::Color(ColorRole::Error) + "[FAIL] Disabled")) << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << "  Control Flow Guard (CFG):   " << (sec.hasCfg ? (Terminal::Color(ColorRole::Success) + "[PASS] Enabled") : (Terminal::Color(ColorRole::Warning) + "[WARN] Disabled")) << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << "  SEH Exception Handling:     " << (sec.hasSeh ? (Terminal::Color(ColorRole::Success) + "[PASS] Enabled") : (Terminal::Color(ColorRole::Warning) + "[WARN] Disabled")) << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << "  Authenticode Signature:     " << (sec.hasAuthenticode ? (Terminal::Color(ColorRole::Success) + "[PASS] Signed") : (Terminal::Color(ColorRole::Warning) + "[WARN] Unsigned")) << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << "  RWX Section Presence:       " << (sec.hasRwxSections ? (Terminal::Color(ColorRole::Error) + "[CRITICAL] Detected RWX Section!") : (Terminal::Color(ColorRole::Success) + "[PASS] None")) << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << "  .NET Managed Binary:        " << (sec.isDotNet ? "YES" : "NO") << "\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Section("Security Mitigations", inspector.GetMetadata().fileName);
+
+        Ui::KeyState("ASLR", sec.hasAslr ? Ui::State::Good : Ui::State::Bad,
+                     sec.hasAslr ? "Enabled" : "Disabled");
+        Ui::KeyState("High-entropy ASLR", sec.hasHighEntropyAslr ? Ui::State::Good : Ui::State::Warn,
+                     sec.hasHighEntropyAslr ? "Enabled" : "Disabled");
+        Ui::KeyState("DEP / NX", sec.hasDep ? Ui::State::Good : Ui::State::Bad,
+                     sec.hasDep ? "Enabled" : "Disabled");
+        Ui::KeyState("Control Flow Guard", sec.hasCfg ? Ui::State::Good : Ui::State::Warn,
+                     sec.hasCfg ? "Enabled" : "Disabled");
+        Ui::KeyState("SEH", sec.hasSeh ? Ui::State::Good : Ui::State::Warn,
+                     sec.hasSeh ? "Enabled" : "Disabled");
+        Ui::KeyState("Authenticode", sec.hasAuthenticode ? Ui::State::Good : Ui::State::Warn,
+                     sec.hasAuthenticode ? "Signed" : "Unsigned");
+        Ui::KeyState("RWX sections", sec.hasRwxSections ? Ui::State::Bad : Ui::State::Good,
+                     sec.hasRwxSections ? "Present" : "None");
+        Ui::KeyState(".NET managed", Ui::State::Neutral, sec.isDotNet ? "Yes" : "No");
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleImports(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /imports [file]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("imports");
             return;
         }
 
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] PE parse error: " << err << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("PE parse error: " + err);
             return;
         }
 
         const auto& imports = inspector.GetImports();
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " IMPORTED FUNCTIONS & LIBRARIES (" << imports.size() << " total)\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        for (const auto& imp : imports) {
-            if (imp.isDangerous) {
-                std::cout << "  " << Terminal::Color(ColorRole::Error) << "[DANGEROUS]" << Terminal::Color(ColorRole::Reset)
-                          << " " << imp.dllName << "!" << imp.functionName
-                          << " " << Terminal::Color(ColorRole::Muted) << "(IAT RVA: 0x" << std::hex << imp.iatRva << ")" << Terminal::Color(ColorRole::Reset) << "\n"
-                          << "     -> " << imp.riskDescription << "\n";
-            } else {
-                std::cout << "  " << imp.dllName << "!" << imp.functionName
-                          << " " << Terminal::Color(ColorRole::Muted) << "(IAT RVA: 0x" << std::hex << imp.iatRva << ")" << Terminal::Color(ColorRole::Reset) << "\n";
-            }
+        Ui::Section("Imports", Ui::Number(imports.size()) + " entries");
+
+        constexpr size_t kLimit = 80;
+        Text::Table table({{"DLL", 14, 24, false},
+                           {"Function", 20, 38, false},
+                           {"IAT", 10, 12, false},
+                           {"Risk", 4, 0, false}});
+        size_t shown = std::min(kLimit, imports.size());
+        for (size_t i = 0; i < shown; ++i) {
+            const auto& imp = imports[i];
+            std::string risk = imp.isDangerous
+                             ? C(ColorRole::Warning) + imp.riskDescription + R()
+                             : "";
+            table.AddRow({imp.dllName, imp.functionName, Hex(imp.iatRva), risk});
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Lines(table.Render(Ui::ContentWidth(), C(ColorRole::Muted), R()));
+        Ui::Truncated(shown, imports.size(), "imports");
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleExports(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /exports [file]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("exports");
             return;
         }
 
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] PE parse error: " << err << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("PE parse error: " + err);
             return;
         }
 
         const auto& exports = inspector.GetExports();
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " EXPORTED FUNCTIONS (" << exports.size() << " total)\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        for (const auto& exp : exports) {
-            std::cout << "  Ordinal " << std::dec << exp.ordinal << ": "
-                      << Terminal::Color(ColorRole::Success) << exp.functionName << Terminal::Color(ColorRole::Reset)
-                      << " @ RVA 0x" << std::hex << exp.rva;
-            if (!exp.forwarderName.empty()) std::cout << " -> " << exp.forwarderName;
+        Ui::Section("Exports", Ui::Number(exports.size()) + " entries");
+
+        if (exports.empty()) {
+            Ui::Note("This image exports no symbols.");
             std::cout << "\n";
+            return;
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+
+        constexpr size_t kLimit = 100;
+        Text::Table table({{"Ordinal", 7, 9, true},
+                           {"Name", 24, 44, false},
+                           {"RVA", 10, 12, false},
+                           {"Forwarder", 10, 0, false}});
+        size_t shown = std::min(kLimit, exports.size());
+        for (size_t i = 0; i < shown; ++i) {
+            const auto& e = exports[i];
+            table.AddRow({std::to_string(e.ordinal), e.functionName, Hex(e.rva), e.forwarderName});
+        }
+        Ui::Lines(table.Render(Ui::ContentWidth(), C(ColorRole::Muted), R()));
+        Ui::Truncated(shown, exports.size(), "exports");
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleStrings(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /strings [file] [min_length]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("strings");
             return;
         }
 
+        bool showAll = false;
         size_t minLen = 5;
-        if (args.size() > 1) {
-            try { minLen = std::stoul(args[1]); } catch (...) {}
+        for (size_t i = 0; i < args.size(); ++i) {
+            if (args[i] == "--all") { showAll = true; continue; }
+            if (i == 0) continue;   // the file argument
+            try { minLen = std::stoul(args[i]); } catch (...) {}
         }
 
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] PE parse error: " << err << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("PE parse error: " + err);
             return;
         }
 
         StringsAnalyzer sa;
         auto strings = sa.ExtractStrings(inspector.GetBuffer(), inspector.GetBufferSize(), minLen);
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " EXTRACTED STRINGS (" << strings.size() << " strings found, minLen=" << minLen << ")\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
+        // Interesting (classified) strings first: those are the ones an analyst
+        // actually wants to see.
+        std::vector<const ExtractedString*> interesting;
         for (const auto& s : strings) {
-            if (s.category != StringCategory::Generic) {
-                std::cout << "  " << Terminal::Color(ColorRole::Warning) << "[" << StringCategoryToString(s.category) << "]" << Terminal::Color(ColorRole::Reset)
-                          << " " << Terminal::Color(ColorRole::Muted) << "(0x" << std::hex << s.fileOffset << ")" << Terminal::Color(ColorRole::Reset) << " " << s.value << "\n";
+            if (showAll || s.category != StringCategory::Generic) {
+                interesting.push_back(&s);
             }
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+
+        Ui::Section("Strings",
+                    Ui::Number(strings.size()) + " extracted   " + Terminal::Bullet() +
+                    "   min length " + std::to_string(minLen));
+
+        const size_t limit = showAll ? 200 : 50;
+        const size_t shown = std::min(limit, interesting.size());
+
+        Text::Table table({{"Category", 12, 16, false},
+                           {"Offset", 10, 12, false},
+                           {"Value", 20, 0, false}});
+        for (size_t i = 0; i < shown; ++i) {
+            table.AddRow({StringCategoryToString(interesting[i]->category),
+                          Hex(interesting[i]->fileOffset),
+                          interesting[i]->value});
+        }
+        Ui::Lines(table.Render(Ui::ContentWidth(), C(ColorRole::Muted), R()));
+        Ui::Truncated(shown, interesting.size(),
+                      showAll ? "strings" : "classified strings",
+                      showAll ? "" : "/strings --all for everything");
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleEntropy(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /entropy [file]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("entropy");
             return;
         }
 
         auto info = EntropyAnalyzer::AnalyzeBinary(file);
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " SHANNON ENTROPY AUDIT: " << file << "\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " Overall File Entropy: " << std::fixed << std::setprecision(2) << info.overallEntropy << " / 8.00\n";
-        std::cout << " Packing Verdict:      " << (info.isPacked ? (Terminal::Color(ColorRole::Error) + "PACKED / ENCRYPTED") : (Terminal::Color(ColorRole::Success) + "NORMAL (Unpacked)")) << Terminal::Color(ColorRole::Reset) << "\n";
+        Ui::Section("Entropy", "Shannon, 0.00 - 8.00");
+        Ui::KeyValue("Overall entropy", Fixed(info.overallEntropy) + " / 8.00");
+        Ui::KeyState("Verdict", info.isPacked ? Ui::State::Bad : Ui::State::Good,
+                     info.isPacked ? "Packed or encrypted" : "Normal (unpacked)");
         if (!info.detectedPacker.empty()) {
-            std::cout << " Detected Packer:      " << Terminal::Color(ColorRole::Warning) << info.detectedPacker << Terminal::Color(ColorRole::Reset) << "\n";
+            Ui::KeyState("Detected packer", Ui::State::Warn, info.detectedPacker);
         }
-        std::cout << "\n " << Terminal::Color(ColorRole::Command) << "Section Entropies:\n" << Terminal::Color(ColorRole::Reset);
+
+        Ui::Group("Sections");
         for (const auto& s : info.sections) {
-            int barLen = static_cast<int>((s.entropy / 8.0) * 20.0);
-            std::string bar(barLen, '#');
-            std::string pad(20 - barLen, '-');
-            std::cout << "  " << std::setw(8) << std::left << s.name
-                      << " [" << bar << pad << "] "
-                      << std::fixed << std::setprecision(2) << s.entropy
-                      << (s.isPacked ? (Terminal::Color(ColorRole::Error) + " [HIGH]" + Terminal::Color(ColorRole::Reset)) : "") << "\n";
+            int barLen = static_cast<int>((s.entropy / 8.0) * 24.0);
+            barLen = std::clamp(barLen, 0, 24);
+            const std::string filled = Terminal::SupportsUnicode() ? "\xE2\x96\x88" : "#";
+            const std::string empty  = Terminal::SupportsUnicode() ? "\xE2\x96\x91" : ".";
+
+            std::string bar = C(s.isPacked ? ColorRole::Warning : ColorRole::Technical) +
+                              Text::Repeat(filled, static_cast<size_t>(barLen)) + R() +
+                              C(ColorRole::Border) +
+                              Text::Repeat(empty, static_cast<size_t>(24 - barLen)) + R();
+
+            std::cout << "  " << C(ColorRole::Muted) << Text::PadRight(s.name, 12) << R()
+                      << bar << "  " << C(ColorRole::Text) << Fixed(s.entropy) << R() << "\n";
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleScan(const std::vector<std::string>& args) {
-        if (args.size() < 2 && (args.empty() || m_activeFile.empty())) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /scan [file] <hex_pattern>\n"
-                      << "    Example: /scan sample.exe \"48 8B 05 ?? ?? ?? ?? 48 85 C0\"\n" << Terminal::Color(ColorRole::Reset);
-            return;
-        }
+        const auto* def = Cmd("scan");
 
         std::string file;
         std::string pattern;
 
-        if (args.size() >= 2) {
+        // Accept: /scan <pattern>            (active sample)
+        //         /scan <file> <pattern>
+        if (args.empty()) {
+            if (def) {
+                Ui::MissingArgument(*def, "Missing hex pattern.");
+            }
+            return;
+        }
+
+        if (args.size() == 1) {
+            file = m_activeFile;
+            pattern = args[0];
+            if (file.empty()) {
+                if (def) {
+                    Ui::MissingArgument(*def,
+                        "No active sample, so both a file and a pattern are required.");
+                }
+                return;
+            }
+        } else {
             file = args[0];
             StripQuotes(file);
             pattern = args[1];
             for (size_t i = 2; i < args.size(); ++i) pattern += " " + args[i];
-        } else {
-            file = m_activeFile;
-            pattern = args[0];
+            m_activeFile = file;
         }
         StripQuotes(pattern);
 
         auto matches = PatternScanner::ScanFile(file, pattern);
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " PATTERN SCAN RESULTS (" << matches.size() << " matches)\n";
-        std::cout << " Pattern: " << pattern << "\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        for (size_t offset : matches) {
-            std::cout << "  Match at File Offset: " << Terminal::Color(ColorRole::Success) << "0x" << std::hex << offset << Terminal::Color(ColorRole::Reset) << "\n";
+        Ui::Section("Pattern Scan", Ui::Number(matches.size()) + " matches");
+        Ui::KeyValue("Pattern", pattern);
+        Ui::KeyValue("File", file);
+
+        if (matches.empty()) {
+            Ui::Note("No occurrences of this pattern were found.");
+            std::cout << "\n";
+            return;
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+
+        Ui::Group("Matches");
+        constexpr size_t kLimit = 100;
+        size_t shown = std::min(kLimit, matches.size());
+        for (size_t i = 0; i < shown; ++i) {
+            std::cout << "  " << C(ColorRole::Muted) << "file offset  " << R()
+                      << C(ColorRole::Technical) << Hex(matches[i]) << R() << "\n";
+        }
+        Ui::Truncated(shown, matches.size(), "matches");
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleSandbox(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /sandbox <path/to/binary.exe>\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("sandbox");
             return;
         }
 
-        std::cout << Terminal::Color(ColorRole::Secondary) << "[*] Launching QEMU Dynamic Hardware Sandbox for " << file << "...\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Info("Launching the QEMU hardware sandbox for " + file);
         auto res = m_orchestrator.RunDynamicSandbox(file, 60);
         m_sessionResult = std::make_unique<UnifiedAnalysisResult>(res);
         std::cout << res.ToAnsiSummary();
@@ -643,40 +865,43 @@ namespace Dracula {
     void DraculaShell::HandleFunctions(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /functions [file]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("functions");
             return;
         }
 
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] PE parse error: " << err << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("PE parse error: " + err);
             return;
         }
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " DISCOVERED FUNCTIONS: " << file << "\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << "  Entrypoint Function: 0x" << std::hex << inspector.GetMetadata().entryPointRva
-                  << " (VA: 0x" << (inspector.GetMetadata().imageBase + inspector.GetMetadata().entryPointRva) << ")\n";
+        const auto& m = inspector.GetMetadata();
+        Ui::Section("Functions", m.fileName);
 
+        Text::Table table({{"Kind", 10, 12, false},
+                           {"RVA", 10, 12, false},
+                           {"VA", 18, 20, false},
+                           {"Name", 10, 0, false}});
+        table.AddRow({"entry", Hex(m.entryPointRva), Hex(m.imageBase + m.entryPointRva), "EntryPoint"});
         for (const auto& exp : inspector.GetExports()) {
-            std::cout << "  Export Function:     0x" << std::hex << exp.rva << " -> " << exp.functionName << "\n";
+            table.AddRow({"export", Hex(exp.rva), Hex(m.imageBase + exp.rva), exp.functionName});
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Lines(table.Render(Ui::ContentWidth(), C(ColorRole::Muted), R()));
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleXrefs(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Usage: /xrefs [file] [rva]\n" << Terminal::Color(ColorRole::Reset);
+            ReportMissingTarget("xrefs");
             return;
         }
 
         PeInspector inspector;
         std::string err;
         if (!inspector.LoadFromFile(file, err)) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] PE parse error: " << err << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("PE parse error: " + err);
             return;
         }
 
@@ -698,83 +923,115 @@ namespace Dracula {
             xrefs = XrefAnalyzer::ExtractXrefs(instructions, inspector, strings);
         }
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " CROSS REFERENCES (" << xrefs.size() << " total references)\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        for (size_t i = 0; i < std::min<size_t>(50, xrefs.size()); ++i) {
+        Ui::Section("Cross References", Ui::Number(xrefs.size()) + " references");
+
+        constexpr size_t kLimit = 50;
+        size_t shown = std::min(kLimit, xrefs.size());
+        Text::Table table({{"From", 10, 12, false},
+                           {"Type", 8, 14, false},
+                           {"To", 10, 12, false},
+                           {"Target", 10, 0, false}});
+        for (size_t i = 0; i < shown; ++i) {
             const auto& x = xrefs[i];
-            std::cout << "  0x" << std::hex << x.fromRva << " [" << XRefTypeToString(x.type) << "] -> 0x" << x.toRva;
-            if (!x.targetName.empty()) std::cout << " (" << x.targetName << ")";
-            std::cout << "\n";
+            table.AddRow({Hex(x.fromRva), XRefTypeToString(x.type), Hex(x.toRva), x.targetName});
         }
-        if (xrefs.size() > 50) {
-            std::cout << "  ... (" << (xrefs.size() - 50) << " more xrefs)\n";
-        }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Lines(table.Render(Ui::ContentWidth(), C(ColorRole::Muted), R()));
+        Ui::Truncated(shown, xrefs.size(), "cross references");
+        std::cout << "\n";
     }
+
+    // ─── Session ────────────────────────────────────────────────────────────
 
     void DraculaShell::HandleFindings(const std::vector<std::string>& args) {
         if (!m_sessionResult) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] No active analysis session. Run /analyze <file> first.\n" << Terminal::Color(ColorRole::Reset);
+            Ui::UsageHint("No active analysis session.",
+                          "/findings",
+                          "/analyze samples\\test_sample.exe",
+                          "Run /analyze <file> first to populate the session.");
             return;
         }
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " ACTIVE SESSION FINDINGS (" << m_sessionResult->findings.size() << " total)\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        for (const auto& f : m_sessionResult->findings) {
-            std::string badge;
-            switch (f.severity) {
-                case FindingSeverity::Critical: badge = Terminal::Color(ColorRole::Error) + "[CRITICAL]"; break;
-                case FindingSeverity::High:     badge = Terminal::Color(ColorRole::Error) + "[HIGH]"; break;
-                case FindingSeverity::Medium:   badge = Terminal::Color(ColorRole::Warning) + "[MEDIUM]"; break;
-                case FindingSeverity::Low:      badge = Terminal::Color(ColorRole::Secondary) + "[LOW]"; break;
-                default:                        badge = Terminal::Color(ColorRole::Muted) + "[INFO]"; break;
-            }
-            std::cout << "  " << badge << Terminal::Color(ColorRole::Reset) << " " << Terminal::Color(ColorRole::Command) << f.title << Terminal::Color(ColorRole::Reset) << " (" << f.id << ")\n"
-                      << "     Category: " << f.category << " | Source: " << f.source << "\n"
-                      << "     Evidence: " << f.evidence << "\n\n";
+        const auto& findings = m_sessionResult->findings;
+        Ui::Section("Findings", Ui::Number(findings.size()) + " recorded");
+
+        if (findings.empty()) {
+            Ui::Note("The pipeline produced no findings for this sample.");
+            std::cout << "\n";
+            return;
         }
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+
+        for (const auto& f : findings) {
+            ColorRole role = ColorRole::Muted;
+            std::string label = "INFO";
+            switch (f.severity) {
+                case FindingSeverity::Critical: role = ColorRole::Error;   label = "CRITICAL"; break;
+                case FindingSeverity::High:     role = ColorRole::Error;   label = "HIGH";     break;
+                case FindingSeverity::Medium:   role = ColorRole::Warning; label = "MEDIUM";   break;
+                case FindingSeverity::Low:      role = ColorRole::Info;    label = "LOW";      break;
+                default:                        role = ColorRole::Muted;   label = "INFO";     break;
+            }
+
+            std::cout << "  " << C(role) << Text::PadRight(label, 9) << R()
+                      << C(ColorRole::Command) << f.title << R()
+                      << C(ColorRole::Muted) << "   " << f.id << R() << "\n";
+            std::cout << "  " << std::string(9, ' ') << C(ColorRole::Muted)
+                      << f.category << " " << Terminal::Bullet() << " " << f.source << R() << "\n";
+            for (const auto& line : Text::Wrap(f.evidence, Ui::ContentWidth() - 11)) {
+                std::cout << "  " << std::string(9, ' ') << C(ColorRole::Text) << line << R() << "\n";
+            }
+            std::cout << "\n";
+        }
     }
 
     void DraculaShell::HandleReport(const std::vector<std::string>& args) {
         if (!m_sessionResult) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] No active analysis session. Run /analyze <file> first.\n" << Terminal::Color(ColorRole::Reset);
+            Ui::UsageHint("No active analysis session to export.",
+                          "/report [json|md|txt] [output_path]",
+                          "/report md report.md",
+                          "Run /analyze <file> first to populate the session.");
             return;
         }
 
-        std::string format = "json";
-        if (!args.empty()) format = args[0];
-
+        std::string format = args.empty() ? "json" : args[0];
         std::string outFile = "dracula_report." + format;
         if (args.size() > 1) outFile = args[1];
 
         if (ReportWriter::SaveReport(*m_sessionResult, outFile, format)) {
-            std::cout << Terminal::Color(ColorRole::Success) << "[+] Successfully saved report to: " << std::filesystem::absolute(outFile).string() << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Success("Report written to " + std::filesystem::absolute(outFile).string());
         } else {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Failed to write report to: " << outFile << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("Failed to write report to " + outFile);
         }
     }
 
     void DraculaShell::HandleSession(const std::vector<std::string>& args) {
         if (!m_sessionResult) {
-            std::cout << Terminal::Color(ColorRole::Warning) << "[*] No active session. Analyze a binary with /analyze <file>.\n" << Terminal::Color(ColorRole::Reset);
+            if (!m_activeFile.empty()) {
+                Ui::Section("Session", "no analysis result");
+                Ui::KeyValue("Active sample", m_activeFile);
+                Ui::Note("Run /analyze to populate findings for this sample.");
+                std::cout << "\n";
+                return;
+            }
+            Ui::UsageHint("No active session.",
+                          "/analyze <file>",
+                          "/analyze samples\\test_sample.exe",
+                          "Inspection commands reuse the active sample once one is set.");
             return;
         }
 
         const auto& s = m_sessionResult->sample;
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " ACTIVE SESSION: " << s.fileName << "\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << "  File Path:    " << s.filePath << "\n";
-        std::cout << "  Size:         " << s.fileSize << " bytes\n";
-        std::cout << "  SHA-256:      " << s.sha256 << "\n";
-        std::cout << "  Architecture: " << s.architecture << "\n";
-        std::cout << "  Threat Score: " << m_sessionResult->threatScore << " / 100 (" << m_sessionResult->threatLevel << ")\n";
-        std::cout << "  Findings:     " << m_sessionResult->findings.size() << " recorded\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Section("Session", s.fileName);
+        Ui::KeyValue("File path", s.filePath);
+        Ui::KeyValue("Size", Ui::Number(s.fileSize) + " bytes");
+        Ui::KeyValue("SHA-256", s.sha256);
+        Ui::KeyValue("Architecture", s.architecture);
+        Ui::KeyValue("Threat score", std::to_string(m_sessionResult->threatScore) + " / 100   " +
+                                     m_sessionResult->threatLevel);
+        Ui::KeyValue("Findings", Ui::Number(m_sessionResult->findings.size()));
+        std::cout << "\n";
     }
+
+    // ─── System ─────────────────────────────────────────────────────────────
 
     void DraculaShell::HandleMcp(const std::vector<std::string>& args) {
         McpServer mcp;
@@ -782,37 +1039,26 @@ namespace Dracula {
     }
 
     void DraculaShell::HandleChangelog(const std::vector<std::string>& args) {
-        std::vector<std::string> candidates = {
-            "CHANGELOG.txt",
-            "../CHANGELOG.txt",
-            "../../CHANGELOG.txt"
-        };
-
-        std::string changelogPath;
-        for (const auto& c : candidates) {
-            if (std::filesystem::exists(c)) {
-                changelogPath = c;
-                break;
-            }
-        }
+        // Resolved relative to the executable / install root, never relative to
+        // whatever directory the user happened to launch Dracula from.
+        std::string changelogPath = Paths::ResolveResource("CHANGELOG.txt");
 
         if (changelogPath.empty()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] CHANGELOG.txt not found in current directory.\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("CHANGELOG.txt could not be located.");
+            Ui::Note("Searched the working directory, the install root and the executable directory.");
             return;
         }
 
         std::ifstream file(changelogPath);
         if (!file.is_open()) {
-            std::cerr << Terminal::Color(ColorRole::Error) << "[-] Could not open " << changelogPath << "\n" << Terminal::Color(ColorRole::Reset);
+            Ui::Error("Could not open " + changelogPath);
             return;
         }
 
         std::string filterVer = args.empty() ? "" : args[0];
         if (!filterVer.empty() && filterVer.front() == 'v') filterVer = filterVer.substr(1);
 
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n" << Terminal::Color(ColorRole::Reset);
-        std::cout << " " << Terminal::Color(ColorRole::Primary) << "DRACULA VERSION HISTORY & RELEASE NOTES" << Terminal::Color(ColorRole::Reset) << "\n";
-        std::cout << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        Ui::Section("Changelog", filterVer.empty() ? changelogPath : ("v" + filterVer));
 
         std::string line;
         bool inTargetSection = filterVer.empty();
@@ -824,20 +1070,22 @@ namespace Dracula {
                     break;
                 }
             }
+            if (!inTargetSection) continue;
 
-            if (inTargetSection) {
-                if (line.find("=====") != std::string::npos) {
-                    std::cout << Terminal::Color(ColorRole::Border) << line << Terminal::Color(ColorRole::Reset) << "\n";
-                } else if (line.find("Dracula v") != std::string::npos) {
-                    std::cout << Terminal::Color(ColorRole::Primary) << line << Terminal::Color(ColorRole::Reset) << "\n";
-                } else if (line == "Added" || line == "Changed" || line == "Fixed" || line == "Verified") {
-                    std::cout << Terminal::Color(ColorRole::Accent) << line << Terminal::Color(ColorRole::Reset) << "\n";
-                } else {
-                    std::cout << line << "\n";
-                }
+            if (line.find("=====") != std::string::npos ||
+                line.find("-----") != std::string::npos) {
+                std::cout << "  " << C(ColorRole::Border)
+                          << Text::Truncate(line, Ui::ContentWidth() - 2) << R() << "\n";
+            } else if (line.find("Dracula v") != std::string::npos) {
+                std::cout << "  " << C(ColorRole::Title) << line << R() << "\n";
+            } else if (line == "Added" || line == "Changed" || line == "Fixed" || line == "Verified") {
+                std::cout << "  " << C(ColorRole::Accent) << line << R() << "\n";
+            } else {
+                std::cout << "  " << C(ColorRole::Text)
+                          << Text::Truncate(line, Ui::ContentWidth() - 2) << R() << "\n";
             }
         }
-        std::cout << "\n" << Terminal::Color(ColorRole::Border) << "======================================================================\n\n" << Terminal::Color(ColorRole::Reset);
+        std::cout << "\n";
     }
 
     void DraculaShell::HandleVersion(const std::vector<std::string>& args) {
@@ -845,11 +1093,10 @@ namespace Dracula {
     }
 
     void DraculaShell::HandleClear(const std::vector<std::string>& args) {
-#ifdef _WIN32
-        system("cls");
-#else
-        system("clear");
-#endif
+        // Clears the viewport only. The analysis session, active sample and
+        // command history are deliberately preserved.
+        Console::ClearScreen();
+        PrintCompactHeader();
     }
 
     void DraculaShell::HandleHelp(const std::vector<std::string>& args) {
@@ -861,10 +1108,21 @@ namespace Dracula {
         m_running = false;
     }
 
+    // ─── Entry point ────────────────────────────────────────────────────────
+
     int DraculaShell::ProcessArgs(int argc, char* argv[]) {
+        // MCP stdio mode must be completely clean: no terminal initialization,
+        // no colours, no artwork, nothing but JSON-RPC on stdout.
+        for (int i = 1; i < argc; ++i) {
+            if (std::string(argv[i]) == "--mcp") {
+                McpServer mcp;
+                mcp.RunStdio();
+                return 0;
+            }
+        }
+
         TerminalGuard termGuard;
 
-        // Check for global flags like --no-color
         for (int i = 1; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-color") {
@@ -880,13 +1138,6 @@ namespace Dracula {
         }
 
         std::string arg1 = argv[1];
-
-        // MCP stdio mode must be completely clean (no banners, no colors)
-        if (arg1 == "--mcp") {
-            McpServer mcp;
-            mcp.RunStdio();
-            return 0;
-        }
 
         if (arg1 == "--help" || arg1 == "-h") {
             PrintHelp("");
@@ -924,11 +1175,9 @@ namespace Dracula {
         else if (arg1 == "--report") command = "report";
         else if (arg1 == "--session") command = "session";
         else if (arg1 == "--no-color" || arg1 == "--no-unicode") {
-            // If only flag provided without command, run interactive
             if (argc == 2) return RunInteractive();
             return 0;
         } else {
-            // Default: treat argv[1] as binary to analyze
             command = "analyze";
             cmdArgs.push_back(arg1);
         }

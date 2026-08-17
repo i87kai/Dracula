@@ -28,8 +28,12 @@ namespace Dracula {
         // Version & Banner
         static std::string GetVersion();
         static void PrintBanner();
+        static void PrintCompactHeader();
         static void PrintHelp(const std::string& specificCommand = "");
         static void PrintVersion();
+
+        // Subtle one-line description of the active session ("" when none).
+        std::string SessionStatusLine() const;
 
         // Public Command Handlers
         void HandleAnalyze(const std::vector<std::string>& args);

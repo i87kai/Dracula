@@ -1,7 +1,7 @@
 #include "cli/terminal.h"
+#include "cli/text_layout.h"
 
 #include <cstdlib>
-#include <regex>
 #include <algorithm>
 
 #ifdef _WIN32
@@ -65,8 +65,12 @@ namespace Dracula {
         DWORD inMode = 0;
         if (hIn != INVALID_HANDLE_VALUE && GetConsoleMode(hIn, &inMode)) {
             s_originalInMode = inMode;
-            // Enable Virtual Terminal input if supported
-            SetConsoleMode(hIn, inMode | ENABLE_VIRTUAL_TERMINAL_INPUT);
+            // The line editor reads keys through _getwch(), which expects the
+            // classic 0x00 / 0xE0 extended-key protocol. Leaving
+            // ENABLE_VIRTUAL_TERMINAL_INPUT on makes the console deliver VT
+            // escape sequences (including focus-in/out reports) instead, which
+            // arrive as phantom ESC keystrokes.
+            SetConsoleMode(hIn, inMode & ~static_cast<DWORD>(ENABLE_VIRTUAL_TERMINAL_INPUT));
         }
 
         // Set UTF-8 code pages
@@ -130,6 +134,10 @@ namespace Dracula {
     }
 
     int Terminal::GetWidth() {
+        // Redirected output has no window to measure. Reporting a generous
+        // fixed width keeps piped/redirected reports from being truncated to an
+        // arbitrary 80 columns.
+        if (s_initialized && !s_isInteractive) return 120;
 #ifdef _WIN32
         HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
         if (hOut != INVALID_HANDLE_VALUE) {
@@ -172,18 +180,25 @@ namespace Dracula {
     const char* Terminal::ColorRaw(ColorRole role) {
         if (!s_colorEnabled) return "";
 
+        // The Dracula palette. Deliberately darker and more restrained than the
+        // basic 16-colour ANSI set: crimson for identity, violet for structure,
+        // cyan for technical detail, gray for everything secondary.
         switch (role) {
-            case ColorRole::Primary:     return "\033[1;91m";             // Bold Crimson / Red
-            case ColorRole::Secondary:   return "\033[1;36m";             // Bold Cyan / Aqua
-            case ColorRole::Accent:      return "\033[1;35m";             // Bold Violet / Purple
-            case ColorRole::Success:     return "\033[1;32m";             // Bold Green
-            case ColorRole::Warning:     return "\033[1;33m";             // Bold Amber / Yellow
-            case ColorRole::Error:       return "\033[1;91m";             // Bright Red
-            case ColorRole::Muted:       return "\033[90m";               // Dim Gray
-            case ColorRole::Selection:   return "\033[7m";                // Inverted / Highlight
-            case ColorRole::Border:      return "\033[90m";               // Frame Border
-            case ColorRole::Command:     return "\033[1;97m";             // Bold Bright White
-            case ColorRole::Description: return "\033[37m";               // Normal Gray
+            case ColorRole::Title:       return "\033[1;38;5;160m";       // Dark crimson, bold
+            case ColorRole::Primary:     return "\033[38;5;167m";         // Blood red
+            case ColorRole::Secondary:   return "\033[38;5;141m";         // Muted violet
+            case ColorRole::Accent:      return "\033[1;38;5;98m";        // Deep violet label
+            case ColorRole::Technical:   return "\033[38;5;80m";          // Cool cyan
+            case ColorRole::Text:        return "\033[38;5;252m";         // Soft white
+            case ColorRole::Muted:       return "\033[38;5;245m";         // Gray
+            case ColorRole::Success:     return "\033[38;5;71m";          // Restrained green
+            case ColorRole::Warning:     return "\033[38;5;179m";         // Amber
+            case ColorRole::Error:       return "\033[1;38;5;160m";       // Red
+            case ColorRole::Info:        return "\033[38;5;110m";         // Steel blue
+            case ColorRole::Selection:   return "\033[48;5;53;38;5;231m"; // Violet bg, white fg
+            case ColorRole::Border:      return "\033[38;5;238m";         // Dark gray frame
+            case ColorRole::Command:     return "\033[1;38;5;255m";       // Bright white
+            case ColorRole::Description: return "\033[38;5;249m";         // Soft gray text
             case ColorRole::Bold:        return "\033[1m";                // Bold
             case ColorRole::Dim:         return "\033[2m";                // Dim
             case ColorRole::Reset:       return "\033[0m";                // Reset
@@ -195,30 +210,14 @@ namespace Dracula {
         return ColorRaw(role);
     }
 
+    // Measurement lives in the layout primitives; Terminal simply forwards so
+    // that there is exactly one implementation of "how wide is this text".
     std::string Terminal::StripAnsi(const std::string& text) {
-        static const std::regex ansiRegex("\033\\[[0-9;?]*[a-zA-Z]");
-        return std::regex_replace(text, ansiRegex, "");
+        return Text::StripAnsi(text);
     }
 
     size_t Terminal::VisibleLength(const std::string& text) {
-        std::string plain = StripAnsi(text);
-        size_t count = 0;
-        for (size_t i = 0; i < plain.size();) {
-            unsigned char c = static_cast<unsigned char>(plain[i]);
-            if ((c & 0x80) == 0) {
-                i += 1;
-            } else if ((c & 0xE0) == 0xC0) {
-                i += 2;
-            } else if ((c & 0xF0) == 0xE0) {
-                i += 3;
-            } else if ((c & 0xF8) == 0xF0) {
-                i += 4;
-            } else {
-                i += 1;
-            }
-            count++;
-        }
-        return count;
+        return Text::VisibleWidth(text);
     }
 
     std::string Terminal::PromptGlyph() {
@@ -226,12 +225,14 @@ namespace Dracula {
     }
 
     std::string Terminal::DraculaPrompt() {
+        // Always terminated by a Reset so the rest of the console can never
+        // inherit the prompt's styling.
         std::string p;
-        p += Color(ColorRole::Primary);
+        p += Color(ColorRole::Title);
         p += "dracula";
         p += Color(ColorRole::Reset);
         p += " ";
-        p += Color(ColorRole::Secondary);
+        p += Color(ColorRole::Primary);
         p += PromptGlyph();
         p += Color(ColorRole::Reset);
         p += " ";
@@ -247,15 +248,15 @@ namespace Dracula {
     }
 
     std::string Terminal::Checkmark() {
-        return s_unicodeEnabled ? "✓" : "[+]";
+        return s_unicodeEnabled ? "✓" : "+";
     }
 
     std::string Terminal::Crossmark() {
-        return s_unicodeEnabled ? "✗" : "[-]";
+        return s_unicodeEnabled ? "✗" : "x";
     }
 
     std::string Terminal::WarningIcon() {
-        return s_unicodeEnabled ? "⚠" : "[!]";
+        return s_unicodeEnabled ? "⚠" : "!";
     }
 
     std::string Terminal::BoxH() {
@@ -291,12 +292,69 @@ namespace Dracula {
     }
 
     std::string Terminal::DrawHorizontalLine(int width) {
-        std::string line;
-        std::string h = BoxH();
-        for (int i = 0; i < width; ++i) {
-            line += h;
+        if (width <= 0) return "";
+        return Text::Repeat(BoxH(), static_cast<size_t>(width));
+    }
+
+    // ─── Console redraw primitives ──────────────────────────────────────────
+
+    void Console::HideCursor() {
+        if (!Terminal::IsInteractive()) return;
+        std::cout << "\033[?25l" << std::flush;
+    }
+
+    void Console::ShowCursor() {
+        if (!Terminal::IsInteractive()) return;
+        std::cout << "\033[?25h" << std::flush;
+    }
+
+    void Console::CarriageReturn() {
+        std::cout << "\r";
+    }
+
+    void Console::ClearLine() {
+        if (!Terminal::IsInteractive()) return;
+        std::cout << "\033[2K";
+    }
+
+    void Console::ClearToEndOfScreen() {
+        if (!Terminal::IsInteractive()) return;
+        std::cout << "\033[J";
+    }
+
+    void Console::ClearScreen() {
+        if (!Terminal::IsInteractive()) {
+            std::cout << "\n";
+            return;
         }
-        return line;
+        std::cout << "\033[2J\033[3J\033[H" << std::flush;
+    }
+
+    void Console::MoveUp(int lines) {
+        if (lines <= 0 || !Terminal::IsInteractive()) return;
+        std::cout << "\033[" << lines << "A";
+    }
+
+    void Console::MoveDown(int lines) {
+        if (lines <= 0 || !Terminal::IsInteractive()) return;
+        std::cout << "\033[" << lines << "B";
+    }
+
+    void Console::MoveRight(int columns) {
+        if (columns <= 0 || !Terminal::IsInteractive()) return;
+        std::cout << "\033[" << columns << "C";
+    }
+
+    void Console::MoveToColumn(int zeroBasedColumn) {
+        if (!Terminal::IsInteractive()) return;
+        if (zeroBasedColumn < 0) zeroBasedColumn = 0;
+        // CHA is 1-based.
+        std::cout << "\033[" << (zeroBasedColumn + 1) << "G";
+    }
+
+    void Console::ResetStyle() {
+        if (!Terminal::IsInteractive()) return;
+        std::cout << "\033[0m\033[?25h" << std::flush;
     }
 
 } // namespace Dracula
