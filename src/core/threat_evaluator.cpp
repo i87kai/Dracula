@@ -1,68 +1,140 @@
 #include "core/threat_evaluator.h"
+#include <algorithm>
+#include <set>
 
-namespace Sandbox {
+namespace Dracula {
 
-    ThreatAssessment ThreatEvaluator::Evaluate(const AnalysisReport& report, const BinaryPackingAnalysis& packing) {
-        ThreatAssessment assessment;
-        int score = 0;
+    ThreatEvaluator::ThreatEvaluator() = default;
+    ThreatEvaluator::~ThreatEvaluator() = default;
 
-        // 1. Evaluate Packing and Entropy
-        if (packing.isPacked) {
-            score += 25;
-            assessment.highlights.push_back("Binary is Packed / Protected (" + packing.detectedPacker + ") - High Entropy: " + std::to_string(packing.overallEntropy));
-            assessment.mitreTechniques.push_back({"T1027.002", "Software Packing", "Defense Evasion", packing.detectedPacker});
-        }
+    ThreatScoreResult ThreatEvaluator::Evaluate(
+        const std::vector<Finding>& findings,
+        const SampleMetadata& meta,
+        const SecurityMitigations& mitigations,
+        double overallEntropy,
+        bool isPacked
+    ) {
+        ThreatScoreResult res;
+        int rawScore = 0;
+        std::set<std::string> mitreSet;
+        std::set<std::string> uniqueCategories;
 
-        // 2. Evaluate Network Connections
-        if (report.totalNetworkConnections > 0) {
-            score += 25;
-            assessment.highlights.push_back("Outbound C2 / Network Socket Connections Established: " + std::to_string(report.totalNetworkConnections));
-            assessment.mitreTechniques.push_back({"T1071.001", "Web Protocols / C2 Connection", "Command and Control", "Outbound socket connect"});
-        }
+        for (const auto& f : findings) {
+            uniqueCategories.insert(f.category);
 
-        // 3. Evaluate Child Process Creation
-        for (const auto& evt : report.events) {
-            if (evt.type == EventType::Stdout || evt.type == EventType::ProcessCreated) {
-                if (evt.message.find("cmd.exe") != std::string::npos || evt.message.find("whoami") != std::string::npos || evt.message.find("powershell") != std::string::npos) {
-                    score += 25;
-                    assessment.highlights.push_back("Suspicious Command Execution / Reconnaissance (" + evt.message + ")");
-                    assessment.mitreTechniques.push_back({"T1059.003", "Windows Command Shell", "Execution", evt.message});
-                    break;
+            switch (f.severity) {
+                case FindingSeverity::Critical: rawScore += 30; break;
+                case FindingSeverity::High:     rawScore += 20; break;
+                case FindingSeverity::Medium:   rawScore += 10; break;
+                case FindingSeverity::Low:      rawScore += 4;  break;
+                case FindingSeverity::Info:     rawScore += 0;  break;
+            }
+
+            for (const auto& tag : f.tags) {
+                if (tag.rfind("MITRE:", 0) == 0) {
+                    mitreSet.insert(tag.substr(6));
                 }
+            }
+
+            if (f.severity >= FindingSeverity::Medium) {
+                res.reasoning.push_back("[" + std::string(SeverityToString(f.severity)) + "] " + f.title + " (" + f.evidence + ")");
             }
         }
 
-        // 4. Evaluate File Operations
-        for (const auto& evt : report.events) {
-            if (evt.type == EventType::Stdout || evt.type == EventType::FileCreated || evt.type == EventType::FileModified) {
-                if (evt.message.find("Temp") != std::string::npos || evt.message.find("dropped") != std::string::npos || evt.message.find("payload") != std::string::npos) {
-                    score += 15;
-                    assessment.highlights.push_back("Dropped Payload / Suspicious File Write in Temp Directory: " + evt.message);
-                    assessment.mitreTechniques.push_back({"T1070", "Indicator Removal / Payload Staging", "Defense Evasion", evt.message});
-                    break;
-                }
-            }
+        // Multi-signal corroboration bonus: if multiple distinct categories flagged, add corroboration weight
+        if (uniqueCategories.size() >= 3) {
+            rawScore += 10;
+            res.reasoning.push_back("[CORROBORATION] Multiple independent attack categories flagged (" + std::to_string(uniqueCategories.size()) + " categories)");
         }
 
-        // 5. Evaluate Registry Changes
-        if (report.totalRegistryChanges > 0) {
-            score += 20;
-            assessment.highlights.push_back("Registry Persistence / Startup Modification Detected.");
-            assessment.mitreTechniques.push_back({"T1547.001", "Registry Run Keys / Startup Folder", "Persistence", "Registry persistence mod"});
+        // Mitigation penalties
+        if (!mitigations.hasDep && !mitigations.hasAslr) {
+            rawScore += 5;
+            res.reasoning.push_back("[SECURITY] Lacks both ASLR and DEP memory exploit mitigations");
         }
 
-        if (score > 100) score = 100;
-        assessment.threatScore = score;
+        if (mitigations.hasRwxSections) {
+            rawScore += 15;
+            res.reasoning.push_back("[PACKING] Section header contains writable and executable (RWX) memory pages");
+        }
 
-        if (score >= 60) {
-            assessment.verdict = "HIGH RISK - MALICIOUS";
-        } else if (score >= 20) {
-            assessment.verdict = "MEDIUM RISK - SUSPICIOUS";
+        if (isPacked || overallEntropy >= 7.5) {
+            rawScore += 10;
+            res.reasoning.push_back("[ENTROPY] High file entropy (> 7.50) indicating encrypted payload or obfuscation");
+        }
+
+        res.score = std::clamp(rawScore, 0, 100);
+
+        if (res.score >= 75) {
+            res.level = "Critical Threat";
+        } else if (res.score >= 45) {
+            res.level = "Suspicious";
+        } else if (res.score >= 25) {
+            res.level = "Low Risk";
         } else {
-            assessment.verdict = "LOW RISK - BENIGN / CLEAN";
+            res.level = "Clean / Benign";
         }
 
-        return assessment;
+        res.mitreTechniques.assign(mitreSet.begin(), mitreSet.end());
+        return res;
     }
 
-} // namespace Sandbox
+    std::vector<Finding> ThreatEvaluator::NormalizeSandboxEvents(const std::vector<Sandbox::TraceEvent>& events) {
+        std::vector<Finding> findings;
+
+        for (const auto& e : events) {
+            if (e.type == Sandbox::EventType::Process) {
+                Finding f;
+                f.id = "SBX_PROCESS_SPAWNED";
+                f.category = "Runtime Execution";
+                f.severity = FindingSeverity::Medium;
+                f.confidence = FindingConfidence::High;
+                f.title = "Child Process Spawned in Sandbox: " + e.message;
+                f.description = "The target binary launched a child process during dynamic VM execution.";
+                f.evidence = e.message + " (PID: " + std::to_string(e.pid) + ") " + e.details;
+                f.source = "QEMU Sandbox Tracer";
+                f.tags = {"Execution", "ProcessCreation", "MITRE:T1059"};
+                findings.push_back(f);
+            } else if (e.type == Sandbox::EventType::Network) {
+                Finding f;
+                f.id = "SBX_NETWORK_ACTIVITY";
+                f.category = "Runtime Network";
+                f.severity = FindingSeverity::High;
+                f.confidence = FindingConfidence::High;
+                f.title = "Outbound Network Socket Connection: " + e.message;
+                f.description = "Observed outbound socket connection initiated from guest VM.";
+                f.evidence = e.message + " " + e.details;
+                f.source = "QEMU Sandbox Tracer";
+                f.tags = {"Network", "C2", "MITRE:T1071"};
+                findings.push_back(f);
+            } else if (e.type == Sandbox::EventType::File) {
+                Finding f;
+                f.id = "SBX_FILE_ACTIVITY";
+                f.category = "Persistence / Dropper";
+                f.severity = FindingSeverity::Medium;
+                f.confidence = FindingConfidence::High;
+                f.title = "File System Modification: " + e.message;
+                f.description = "Observed file creation or drop inside guest environment.";
+                f.evidence = e.message + " " + e.details;
+                f.source = "QEMU Sandbox Tracer";
+                f.tags = {"FileDrop", "Dropper", "MITRE:T1105"};
+                findings.push_back(f);
+            } else if (e.type == Sandbox::EventType::Registry) {
+                Finding f;
+                f.id = "SBX_REGISTRY_MODIFIED";
+                f.category = "Persistence";
+                f.severity = FindingSeverity::High;
+                f.confidence = FindingConfidence::High;
+                f.title = "Registry Key Modification: " + e.message;
+                f.description = "Observed persistent Windows registry key modification.";
+                f.evidence = e.message + " " + e.details;
+                f.source = "QEMU Sandbox Tracer";
+                f.tags = {"Persistence", "Registry", "MITRE:T1547"};
+                findings.push_back(f);
+            }
+        }
+
+        return findings;
+    }
+
+} // namespace Dracula

@@ -15,7 +15,9 @@ namespace Sandbox {
         bool monitorFiles         = true;      // Track file creation, modifications, and deletions
         bool monitorRegistry      = true;      // Track Windows registry modifications
         bool monitorNetwork       = true;      // Track network sockets and outbound connections
+        bool enableMemoryDumps    = false;     // Capture memory modifications
         uint32_t executionTimeoutSeconds = 60; // Max execution timeout before stopping
+        uint32_t maxInstructions = 10000;      // Max emulation instructions
     };
 
     // VirtualBox environment and VM configuration
@@ -36,22 +38,30 @@ namespace Sandbox {
         Stdout,
         Stderr,
         ProcessCreated,
+        Process = 38,
         ProcessTerminated,
         FileCreated,
+        File = 40,
         FileModified,
         FileDeleted,
         RegistryKeyCreated,
+        Registry = 43,
         RegistryValueSet,
         NetworkConnect,
+        Network = 45,
         ExecutionStarted,
         ExecutionFinished,
+        Memory = 50,
         Error
     };
 
     // Data structure representing a single trace event
     struct TraceEvent {
-        EventType type;
-        uint64_t timestampMs;
+        EventType type = EventType::Info;
+        uint64_t timestampMs = 0;
+        uint64_t timestamp = 0;
+        uint32_t pid = 0;
+        std::string processName;
         std::string category;
         std::string message;
         std::string details;
@@ -64,6 +74,7 @@ namespace Sandbox {
         std::chrono::system_clock::time_point startTime;
         std::chrono::system_clock::time_point endTime;
         uint32_t exitCode = 0;
+        int threatScore = 0;
         std::vector<TraceEvent> events;
         size_t totalProcessesCreated = 0;
         size_t totalFilesModified = 0;

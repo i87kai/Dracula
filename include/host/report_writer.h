@@ -1,17 +1,28 @@
 #pragma once
 
-#include "../common/types.h"
+#include "common/types.h"
+#include "common/findings.h"
 #include <string>
 
-namespace Sandbox {
+namespace Dracula {
 
     class ReportWriter {
     public:
-        // Format report into a detailed human-readable text document
-        static std::string GenerateTextReport(const AnalysisReport& report);
+        // Save Unified Analysis Result to disk in chosen format
+        static bool SaveReport(const UnifiedAnalysisResult& result, const std::string& outputPath, const std::string& format = "auto");
 
-        // Save report to disk as a text file
-        static bool SaveReportToFile(const AnalysisReport& report, const std::string& outputPath);
+        // Format helpers
+        static std::string ToJson(const UnifiedAnalysisResult& result);
+        static std::string ToMarkdown(const UnifiedAnalysisResult& result);
+        static std::string ToText(const UnifiedAnalysisResult& result);
+
+        // Legacy compatibility
+        static std::string GenerateTextReport(const Sandbox::AnalysisReport& report);
+        static bool SaveReportToFile(const Sandbox::AnalysisReport& report, const std::string& outputPath);
     };
 
-} // namespace Sandbox
+} // namespace Dracula
+
+namespace Sandbox {
+    using ReportWriter = Dracula::ReportWriter;
+}

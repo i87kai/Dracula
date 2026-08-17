@@ -59,3 +59,9 @@ namespace Sandbox {
     };
 
 } // namespace Sandbox
+
+namespace Dracula {
+    using ConfigManager = Sandbox::ConfigManager;
+    using QemuConfig = Sandbox::QemuConfig;
+    using ToolsConfig = Sandbox::ToolsConfig;
+}

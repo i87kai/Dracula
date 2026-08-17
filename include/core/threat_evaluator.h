@@ -1,29 +1,39 @@
 #pragma once
 
+#include "common/findings.h"
 #include "common/types.h"
-#include "core/entropy_analyzer.h"
 #include <string>
 #include <vector>
 
-namespace Sandbox {
+namespace Dracula {
 
-    struct MitreTechnique {
-        std::string id;
-        std::string name;
-        std::string tactic;
-        std::string evidence;
-    };
-
-    struct ThreatAssessment {
-        int threatScore = 0; // 0 to 100
-        std::string verdict; // "CLEAN", "SUSPICIOUS", "MALICIOUS"
-        std::vector<std::string> highlights;
-        std::vector<MitreTechnique> mitreTechniques;
+    struct ThreatScoreResult {
+        int                      score = 0; // 0 - 100
+        std::string              level = "Clean"; // Clean, Low, Medium, High, Critical
+        std::vector<std::string> reasoning;
+        std::vector<std::string> mitreTechniques;
     };
 
     class ThreatEvaluator {
     public:
-        static ThreatAssessment Evaluate(const AnalysisReport& report, const BinaryPackingAnalysis& packing);
+        ThreatEvaluator();
+        ~ThreatEvaluator();
+
+        // Evaluate complete unified findings to generate evidence-based threat score
+        static ThreatScoreResult Evaluate(
+            const std::vector<Finding>& findings,
+            const SampleMetadata& meta,
+            const SecurityMitigations& mitigations,
+            double overallEntropy,
+            bool isPacked
+        );
+
+        // Normalize sandbox trace events into findings
+        static std::vector<Finding> NormalizeSandboxEvents(const std::vector<Sandbox::TraceEvent>& events);
     };
 
-} // namespace Sandbox
+} // namespace Dracula
+
+namespace Sandbox {
+    using ThreatEvaluator = Dracula::ThreatEvaluator;
+}
