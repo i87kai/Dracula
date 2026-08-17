@@ -1,5 +1,5 @@
 # 🧛 DRACULA BINARY INTELLIGENCE & REVERSE-ENGINEERING PLATFORM
-## Technical Architecture & Developer Guide (v2.0.0)
+## Technical Architecture & Developer Guide (v1.0.0)
 
 ---
 

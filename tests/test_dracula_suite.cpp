@@ -1,4 +1,5 @@
 #include "common/findings.h"
+#include "common/version.h"
 #include "core/pe_inspector.h"
 #include "core/entropy_analyzer.h"
 #include "core/strings_analyzer.h"
@@ -12,6 +13,10 @@
 #include "core/analysis_orchestrator.h"
 #include "host/report_writer.h"
 #include "mcp/mcp_server.h"
+#include "cli/terminal.h"
+#include "cli/command_registry.h"
+#include "cli/line_editor.h"
+#include "cli/dracula_shell.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -28,6 +33,7 @@
 #include <cassert>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 static int g_passCount = 0;
 static int g_failCount = 0;
@@ -571,7 +577,7 @@ static void TestJsonGrammarValidation() {
     if (!isValidJson) {
         std::cerr << "[-] JSON validation error: " << parseErr << "\n";
     }
-    AssertTest(jsonStr.find("\"dracula_version\": \"2.0.0\"") != std::string::npos, "JSON contains dracula_version schema header");
+    AssertTest(jsonStr.find("\"dracula_version\": \"" + std::string(Dracula::Version::String) + "\"") != std::string::npos, "JSON contains dracula_version schema header (v1.0.0)");
     AssertTest(jsonStr.find("calc.exe") != std::string::npos, "JSON accurately escapes Windows paths");
 }
 
@@ -584,6 +590,7 @@ static void TestMcpDeepSession() {
     // 1. Initialize
     std::string initResp = mcp.ProcessMessage("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
     AssertTest(initResp.find("\"name\":\"Dracula-Intelligence-Suite\"") != std::string::npos, "MCP initialize protocol negotiation");
+    AssertTest(initResp.find("\"version\":\"" + std::string(Dracula::Version::String) + "\"") != std::string::npos, "MCP initialize returns authoritative version 1.0.0");
 
     // 2. Tools List
     std::string listResp = mcp.ProcessMessage("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
@@ -646,6 +653,262 @@ static void TestHashVerification() {
     AssertTest(md5 == "900150983cd24fb0d6963f7d28e17f72", "MD5 matches standard test vector for 'abc'");
 }
 
+// ─── 12. VERSION AUTHORITATIVE CONSISTENCY AUDIT ───────────────────────────
+static void TestVersionConsistency() {
+    std::cout << "\n\033[1;36m=== [AUDIT 12] Authoritative Version v1.0.0 Baseline Consistency ===\033[0m\n";
+
+    AssertTest(Dracula::Version::Major == 1, "Authoritative Version Major is 1");
+    AssertTest(Dracula::Version::Minor == 0, "Authoritative Version Minor is 0");
+    AssertTest(Dracula::Version::Patch == 0, "Authoritative Version Patch is 0");
+    AssertTest(std::string(Dracula::Version::String) == "1.0.0", "Authoritative Version String is 1.0.0");
+    AssertTest(Dracula::DraculaShell::GetVersion() == "1.0.0", "DraculaShell reports version 1.0.0");
+
+    Dracula::UnifiedAnalysisResult res;
+    std::string json = res.ToJson();
+    AssertTest(json.find("\"dracula_version\": \"1.0.0\"") != std::string::npos, "Analysis JSON serialization uses authoritative 1.0.0 version");
+}
+
+// ─── 13. TERMINAL THEME & CAPABILITIES AUDIT ───────────────────────────────
+static void TestTerminalThemeAndCapabilities() {
+    std::cout << "\n\033[1;36m=== [AUDIT 13] Terminal Capabilities, Semantic Theme, & ASCII Fallback ===\033[0m\n";
+
+    // 1. ANSI escape stripping
+    std::string colored = "\033[1;31mDracula\033[0m \033[36mTerminal\033[0m";
+    AssertTest(Dracula::Terminal::StripAnsi(colored) == "Dracula Terminal", "StripAnsi removes all ANSI color sequences");
+
+    // 2. Visible length computation
+    AssertTest(Dracula::Terminal::VisibleLength(colored) == 16, "VisibleLength correctly computes printable character count");
+
+    // 3. Color disable / --no-color mode
+    Dracula::Terminal::SetColorEnabled(false);
+    AssertTest(Dracula::Terminal::Color(Dracula::ColorRole::Primary).empty(), "Color returns empty string when color is disabled (--no-color / NO_COLOR)");
+    AssertTest(Dracula::Terminal::Color(Dracula::ColorRole::Secondary).empty(), "Secondary color returns empty string when color disabled");
+    Dracula::Terminal::SetColorEnabled(true);
+
+    // 4. Safe ASCII fallback glyphs
+    Dracula::Terminal::SetUnicodeEnabled(false);
+    AssertTest(Dracula::Terminal::PromptGlyph() == ">", "Safe ASCII fallback prompt glyph is '>'");
+    AssertTest(Dracula::Terminal::BoxH() == "-", "Safe ASCII fallback horizontal box is '-'");
+    AssertTest(Dracula::Terminal::BoxTL() == "+", "Safe ASCII fallback top-left corner is '+'");
+    AssertTest(Dracula::Terminal::Bullet() == "*", "Safe ASCII fallback bullet is '*'");
+    Dracula::Terminal::SetUnicodeEnabled(true);
+
+    // 5. Unicode glyphs enabled
+    AssertTest(Dracula::Terminal::PromptGlyph() == "❯", "Unicode prompt glyph is '❯'");
+    AssertTest(Dracula::Terminal::BoxH() == "─", "Unicode box horizontal is '─'");
+    AssertTest(Dracula::Terminal::BoxTL() == "┌", "Unicode box top-left is '┌'");
+}
+
+// ─── 14. CENTRAL COMMAND REGISTRY METADATA AUDIT ───────────────────────────
+static void TestCommandRegistryMetadata() {
+    std::cout << "\n\033[1;36m=== [AUDIT 14] Central Command Registry & Alias Integrity ===\033[0m\n";
+
+    auto& registry = Dracula::CommandRegistry::Instance();
+    const auto& cmds = registry.GetAllCommands();
+
+    AssertTest(cmds.size() >= 20, "CommandRegistry contains complete command suite (>= 20 commands registered)");
+
+    bool allHaveDescription = true;
+    bool allHaveUsage = true;
+    bool allHaveCategory = true;
+    bool allHaveHandlers = true;
+
+    for (const auto& cmd : cmds) {
+        if (cmd.description.empty()) allHaveDescription = false;
+        if (cmd.usage.empty()) allHaveUsage = false;
+        if (cmd.category.empty()) allHaveCategory = false;
+        if (!cmd.handler) allHaveHandlers = false;
+    }
+
+    AssertTest(allHaveDescription, "All registered commands have descriptive summaries");
+    AssertTest(allHaveUsage, "All registered commands define standard usage syntax");
+    AssertTest(allHaveCategory, "All registered commands are grouped into semantic categories");
+    AssertTest(allHaveHandlers, "All registered commands are bound to executable handlers");
+
+    // Alias lookups
+    const auto* cmdA = registry.Find("a");
+    AssertTest(cmdA != nullptr && cmdA->name == "analyze", "Alias /a resolves to /analyze");
+
+    const auto* cmdDis = registry.Find("dis");
+    AssertTest(cmdDis != nullptr && cmdDis->name == "disasm", "Alias /dis resolves to /disasm");
+
+    const auto* cmdSec = registry.Find("sec");
+    AssertTest(cmdSec != nullptr && cmdSec->name == "security", "Alias /sec resolves to /security");
+
+    const auto* cmdCl = registry.Find("cl");
+    AssertTest(cmdCl != nullptr && cmdCl->name == "changelog", "Alias /cl resolves to /changelog");
+
+    const auto* cmdV = registry.Find("v");
+    AssertTest(cmdV != nullptr && cmdV->name == "version", "Alias /v resolves to /version");
+}
+
+// ─── 15. SLASH COMMAND PALETTE FILTERING AUDIT ─────────────────────────────
+static void TestSlashCommandPaletteFiltering() {
+    std::cout << "\n\033[1;36m=== [AUDIT 15] Slash Command Palette Live Prefix Filtering ===\033[0m\n";
+
+    auto& registry = Dracula::CommandRegistry::Instance();
+
+    // 1. Root slash shows all commands
+    auto allMatches = registry.FilterByPrefix("/");
+    AssertTest(allMatches.size() == registry.GetAllCommands().size(), "Root prefix '/' returns all registered slash commands");
+
+    // 2. Prefix '/s' matches sandbox, scan, security, strings, session
+    auto sMatches = registry.FilterByPrefix("/s");
+    AssertTest(sMatches.size() >= 4, "Prefix '/s' matches multiple slash commands (>= 4)");
+    bool hasStrings = false, hasSecurity = false, hasScan = false, hasSandbox = false;
+    for (const auto* m : sMatches) {
+        if (m->name == "strings") hasStrings = true;
+        if (m->name == "security") hasSecurity = true;
+        if (m->name == "scan") hasScan = true;
+        if (m->name == "sandbox") hasSandbox = true;
+    }
+    AssertTest(hasStrings && hasSecurity && hasScan && hasSandbox, "Prefix '/s' correctly returns /strings, /security, /scan, and /sandbox");
+
+    // 3. Narrowed prefix '/str' matches exactly /strings
+    auto strMatches = registry.FilterByPrefix("/str");
+    AssertTest(strMatches.size() == 1 && strMatches[0]->name == "strings", "Prefix '/str' narrows uniquely to /strings");
+
+    // 4. Non-matching prefix returns empty
+    auto nonMatches = registry.FilterByPrefix("/nonexistent_ghost_command");
+    AssertTest(nonMatches.empty(), "Non-matching slash prefix returns empty vector");
+}
+
+// ─── 16. LINE EDITOR & PALETTE SELECTION MODEL AUDIT ───────────────────────
+static void TestLineEditorBufferAndPaletteModel() {
+    std::cout << "\n\033[1;36m=== [AUDIT 16] Line Editor Buffer & Slash Palette Selection Model ===\033[0m\n";
+
+    Dracula::LineEditor editor;
+
+    // 1. Text insertion & cursor movement
+    editor.InsertString("/dis");
+    AssertTest(editor.GetBuffer() == "/dis", "InsertString populates line editor buffer");
+    AssertTest(editor.GetCursorPos() == 4, "Cursor tracks end of inserted text");
+    AssertTest(editor.IsPaletteActive(), "Palette automatically activates when input begins with '/'");
+
+    // 2. Palette navigation (Up / Down)
+    size_t initialSelection = editor.GetPaletteSelection();
+    editor.PaletteMoveDown();
+    // Wrap or move down
+    editor.PaletteMoveUp();
+    AssertTest(editor.GetPaletteSelection() == initialSelection, "Palette Up/Down arrows traverse selection index");
+
+    // 3. Tab completion
+    std::string accepted;
+    bool acceptedOk = editor.PaletteAccept(accepted);
+    AssertTest(acceptedOk && accepted == "disasm", "Palette acceptance completes command name 'disasm'");
+    AssertTest(editor.GetBuffer() == "/disasm ", "Buffer updated with completed command name and trailing space");
+    AssertTest(!editor.IsPaletteActive(), "Palette closes after command completion");
+
+    // 4. Backspace & Delete
+    editor.DeleteCharBeforeCursor();
+    AssertTest(editor.GetBuffer() == "/disasm", "Backspace removes trailing space");
+
+    // 5. Cursor Navigation (Home / End)
+    editor.MoveCursorHome();
+    AssertTest(editor.GetCursorPos() == 0, "Home moves cursor to index 0");
+    editor.MoveCursorEnd();
+    AssertTest(editor.GetCursorPos() == 7, "End moves cursor to end of line");
+
+    // 6. Clear line
+    editor.ClearLine();
+    AssertTest(editor.GetBuffer().empty() && editor.GetCursorPos() == 0, "ClearLine empties buffer and resets cursor");
+}
+
+// ─── 17. COMMAND HISTORY PERSISTENCE AUDIT ─────────────────────────────────
+static void TestCommandHistoryLogic() {
+    std::cout << "\n\033[1;36m=== [AUDIT 17] Command History Deduplication & Disk Persistence ===\033[0m\n";
+
+    std::string testHistFile = "test_history_temp.txt";
+    if (std::filesystem::exists(testHistFile)) {
+        std::filesystem::remove(testHistFile);
+    }
+
+    Dracula::LineEditor editor;
+    editor.SetHistoryFilePath(testHistFile);
+    editor.SetMaxHistorySize(100);
+
+    // 1. Add commands
+    editor.AddHistory("/analyze sample.exe");
+    // Duplicate consecutive entry
+    editor.AddHistory("/analyze sample.exe");
+    AssertTest(editor.GetHistory().size() == 1, "Consecutive duplicate command lines are deduplicated in history");
+
+    editor.AddHistory("/security");
+    editor.AddHistory("/disasm");
+    AssertTest(editor.GetHistory().size() == 3, "Distinct commands are correctly appended to history");
+
+    // 2. Save & Reload from disk
+    editor.SaveHistory();
+    AssertTest(std::filesystem::exists(testHistFile), "History successfully written to disk file");
+
+    Dracula::LineEditor editor2;
+    editor2.SetHistoryFilePath(testHistFile);
+    editor2.LoadHistory();
+    AssertTest(editor2.GetHistory().size() == 3, "History loaded from disk contains exact count of saved commands");
+    AssertTest(editor2.GetHistory()[0] == "/analyze sample.exe", "History preserves first command line");
+    AssertTest(editor2.GetHistory()[2] == "/disasm", "History preserves latest command line");
+
+    std::filesystem::remove(testHistFile);
+}
+
+// ─── 18. CHANGELOG PARSER & INTEGRITY AUDIT ────────────────────────────────
+static void TestChangelogParsing() {
+    std::cout << "\n\033[1;36m=== [AUDIT 18] Plain-Text CHANGELOG.txt Integrity & Verification ===\033[0m\n";
+
+    std::vector<std::string> candidates = {"CHANGELOG.txt", "../CHANGELOG.txt"};
+    std::string foundPath;
+    for (const auto& c : candidates) {
+        if (std::filesystem::exists(c)) {
+            foundPath = c;
+            break;
+        }
+    }
+
+    AssertTest(!foundPath.empty(), "CHANGELOG.txt exists in project directory");
+
+    std::ifstream file(foundPath);
+    AssertTest(file.is_open(), "CHANGELOG.txt can be opened for reading");
+
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string text = buffer.str();
+
+    AssertTest(text.find("Dracula v1.0.0") != std::string::npos, "CHANGELOG.txt defines Dracula v1.0.0 release header");
+    AssertTest(text.find("Added") != std::string::npos, "CHANGELOG.txt includes Added section");
+    AssertTest(text.find("Changed") != std::string::npos, "CHANGELOG.txt includes Changed section");
+    AssertTest(text.find("Fixed") != std::string::npos, "CHANGELOG.txt includes Fixed section");
+    AssertTest(text.find("Verified") != std::string::npos, "CHANGELOG.txt includes Verified section");
+    AssertTest(text.find("mojibake") != std::string::npos, "CHANGELOG.txt documents UTF-8/mojibake encoding fix");
+}
+
+// ─── 19. ACTIVE SESSION STATE WORKFLOW AUDIT ───────────────────────────────
+static void TestSessionWorkflow() {
+    std::cout << "\n\033[1;36m=== [AUDIT 19] Analysis Session State & Cross-Command Persistence ===\033[0m\n";
+
+    Dracula::DraculaShell shell;
+    AssertTest(shell.GetSessionResult() == nullptr, "Initial shell session is empty before analysis");
+
+    auto mockResult = std::make_unique<Dracula::UnifiedAnalysisResult>();
+    mockResult->sample.fileName = "malware_sample.exe";
+    mockResult->sample.filePath = "samples/malware_sample.exe";
+    mockResult->sample.architecture = "x86_64";
+    mockResult->threatScore = 88;
+    mockResult->threatLevel = "Critical Threat";
+
+    Dracula::Finding f;
+    f.id = "SESSION_TEST_FINDING";
+    f.title = "Mock High Threat Finding";
+    f.severity = Dracula::FindingSeverity::Critical;
+    mockResult->findings.push_back(f);
+
+    shell.SetActiveSession("samples/malware_sample.exe", std::move(mockResult));
+
+    AssertTest(shell.GetSessionResult() != nullptr, "Session result is stored in active DraculaShell");
+    AssertTest(shell.GetSessionResult()->threatScore == 88, "Session threat score is preserved across invocations");
+    AssertTest(shell.GetActiveFile() == "samples/malware_sample.exe", "Active target file path is retained for subsequent commands");
+    AssertTest(shell.GetSessionResult()->findings.size() == 1, "Session findings collection remains accessible to /findings and /report");
+}
+
 int main() {
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << "\033[1;31m 🧛 DRACULA DEEP VERIFICATION & AUDIT TEST HARNESS\033[0m\n";
@@ -662,6 +925,14 @@ int main() {
     TestMcpDeepSession();
     TestThreatScoreDeterminism();
     TestHashVerification();
+    TestVersionConsistency();
+    TestTerminalThemeAndCapabilities();
+    TestCommandRegistryMetadata();
+    TestSlashCommandPaletteFiltering();
+    TestLineEditorBufferAndPaletteModel();
+    TestCommandHistoryLogic();
+    TestChangelogParsing();
+    TestSessionWorkflow();
 
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << " FINAL AUDIT RESULTS: \033[1;32m" << g_passCount << " PASSED\033[0m, \033[1;31m"
@@ -670,3 +941,4 @@ int main() {
 
     return (g_failCount == 0) ? 0 : 1;
 }
+

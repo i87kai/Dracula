@@ -1,4 +1,5 @@
 #include "common/findings.h"
+#include "common/version.h"
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
@@ -27,7 +28,7 @@ namespace Dracula {
     std::string UnifiedAnalysisResult::ToJson() const {
         std::ostringstream ss;
         ss << "{\n";
-        ss << "  \"dracula_version\": \"2.0.0\",\n";
+        ss << "  \"dracula_version\": \"" << Version::String << "\",\n";
         ss << "  \"timestamp\": \"" << EscapeJson(timestampIso) << "\",\n";
         ss << "  \"duration_ms\": " << analysisDurationMs << ",\n";
 

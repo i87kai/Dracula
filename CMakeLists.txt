@@ -1,9 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
-project(Dracula LANGUAGES C CXX RC)
+project(Dracula VERSION 1.0.0 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Encoding options
+if(MSVC)
+    add_compile_options(/utf-8)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-finput-charset=UTF-8 -fexec-charset=UTF-8)
+endif()
 
 # Build options
 option(BUILD_TESTS "Build comprehensive test suites" ON)
@@ -48,6 +55,9 @@ set(DRACULA_CORE_SOURCES
     src/host/report_writer.cpp
     src/host/console_ui.cpp
     src/host/process_inspector.cpp
+    src/cli/terminal.cpp
+    src/cli/command_registry.cpp
+    src/cli/line_editor.cpp
     src/cli/dracula_shell.cpp
     src/mcp/mcp_server.cpp
 )

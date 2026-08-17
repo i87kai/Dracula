@@ -1,5 +1,6 @@
 #include "mcp/mcp_server.h"
 #include "host/report_writer.h"
+#include "common/version.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -57,7 +58,7 @@ namespace Dracula {
         std::string id = ExtractJsonId(requestJson);
 
         if (method == "initialize") {
-            return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"Dracula-Intelligence-Suite\",\"version\":\"2.0.0\"}}}";
+            return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"Dracula-Intelligence-Suite\",\"version\":\"" + std::string(Version::String) + "\"}}}";
         }
 
         if (method == "notifications/initialized") {

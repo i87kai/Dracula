@@ -1,0 +1,56 @@
+============================================================
+Dracula v1.0.0
+Release: 2026-08-17
+============================================================
+
+Added
+-----
+- Unified Dracula.exe primary executable with interactive and scripted CLI interfaces.
+- Capstone 5.0.1 x86/x64 disassembler engine with colored syntax highlighting.
+- Control Flow Graph (CFG) analyzer with basic block discovery and ASCII topology rendering.
+- Cross Reference (XRef) analyzer detecting code calls, conditional jumps, imports, and data references.
+- Safe bounds-checked PE32/PE32+ parser auditing headers, sections, imports, exports, TLS, and digital signatures.
+- Unicorn 2 CPU instruction emulator with configurable anti-debug policies (Bypass, Realistic, Neutral).
+- Synthetic Win32 HLE subsystem with mock TEB/PEB layout and memory allocation interception.
+- Native Model Context Protocol (MCP) stdio server (protocol version 2024-11-05) for AI tool calling.
+- Real-time interactive line editor with cursor manipulation, Home/End, Delete/Backspace, and line clearing shortcuts.
+- Interactive slash command palette (triggered by '/') with live prefix filtering and aligned descriptions.
+- Keyboard navigation in command palette (Up/Down arrow selection, Tab completion, Enter acceptance, Escape dismissal).
+- Intelligent autocompletion for slash commands, command-specific arguments (e.g. json, md, txt), and filesystem paths.
+- Persistent command history stored across sessions with bounded size in application data directory.
+- Centralized command registry (CommandRegistry) defining command metadata, aliases, categories, and handlers from a single authoritative source.
+- Centralized terminal theme and capability engine (Terminal) supporting semantic color roles, width detection, and --no-color/NO_COLOR support.
+- Safe ASCII fallback rendering for non-Unicode environments to eliminate terminal mojibake.
+- Multi-format report serializer for machine-readable JSON, Markdown documentation, and plain text summaries.
+- Dedicated /changelog command and --changelog CLI argument dynamically parsing project release history.
+- Dedicated /version command and --version CLI argument displaying version, architecture, and engine metadata.
+- Comprehensive 100% automated test suite verifying all intelligence engines, schemas, and UI logic.
+
+Changed
+-------
+- Standardized project version baseline to Dracula v1.0.0 via centralized version.h header.
+- Replaced basic std::getline REPL with custom interactive LineEditor supporting VT processing.
+- Replaced legacy giant ASCII art banner with compact, professional Dracula-themed framed header.
+- Unified CLI argument dispatch and interactive shell execution behind shared CommandRegistry handlers.
+- Refactored JSON export to query authoritative version constants dynamically.
+
+Fixed
+-----
+- Fixed Windows Terminal / console encoding mojibake by configuring UTF-8 code pages (CP_UTF8) and enabling virtual terminal processing (ENABLE_VIRTUAL_TERMINAL_PROCESSING).
+- Fixed prompt character glyph corruption by providing automatic ASCII fallback ('>' instead of Unicode '❯').
+- Fixed MCP mode stdout pollution by ensuring stdio JSON-RPC streams remain clean of UI banners and ANSI codes.
+- Fixed output redirection emitting ANSI escape sequences when piped to files or non-interactive streams.
+
+Verified
+--------
+- Capstone 5.0.1 instruction disassembly across 32-bit and 64-bit binaries.
+- CFG recursive block traversal and jump target resolution.
+- XRef CALL and JMP reference detection across code sections.
+- Unicorn 2 Win32 HLE machine code execution with synthetic TEB/PEB.
+- Anti-debug BeingDebugged policy toggles (Bypass, Realistic, Neutral).
+- Safe PE parser resistance against malformed and truncated buffers.
+- Deterministic 0-100 multi-signal threat evaluation and MITRE ATT&CK extraction.
+- 100% syntactically valid JSON serialization and schema headers.
+- MCP protocol initialize, ping, tools/list, and tools/call execution.
+- Command registry registration, alias lookup, and prefix filtering.
+- Line editor buffer manipulation, slash palette selection model, and history persistence.
