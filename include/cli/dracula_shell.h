@@ -52,6 +52,7 @@ namespace Dracula {
         void HandleStrings(const std::vector<std::string>& args);
         void HandleEntropy(const std::vector<std::string>& args);
         void HandleSandbox(const std::vector<std::string>& args);
+        void HandleAntiEvasion(const std::vector<std::string>& args);
         void HandleScan(const std::vector<std::string>& args);
         void HandleFunctions(const std::vector<std::string>& args);
         void HandleXrefs(const std::vector<std::string>& args);

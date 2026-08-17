@@ -127,6 +127,36 @@ namespace Dracula {
         }
         ss << "  ],\n";
 
+        // Anti-Evasion. Embedded as a real nested object when the engine ran.
+        ss << "  \"anti_evasion\": ";
+        if (antiEvasionJson.empty()) {
+            ss << "{\n"
+               << "    \"executed\": false,\n"
+               << "    \"environment_sensitivity_score\": null,\n"
+               << "    \"profiles\": [],\n"
+               << "    \"techniques\": [],\n"
+               << "    \"differential_runs\": [],\n"
+               << "    \"branch_divergences\": []\n"
+               << "  },\n";
+        } else {
+            // Re-indent the engine's object so the enclosing document stays tidy.
+            std::ostringstream block;
+            std::istringstream in(antiEvasionJson);
+            std::string line;
+            bool firstLine = true;
+            while (std::getline(in, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (firstLine) { block << line << "\n"; firstLine = false; }
+                else           { block << "  " << line << "\n"; }
+            }
+            std::string rendered = block.str();
+            while (!rendered.empty() &&
+                   (rendered.back() == '\n' || rendered.back() == ' ')) {
+                rendered.pop_back();
+            }
+            ss << rendered << ",\n";
+        }
+
         // Emulation summary
         ss << "  \"emulation\": {\n";
         ss << "    \"executed\": " << (emulation.instructionsExecuted > 0 ? "true" : "false") << ",\n";
@@ -211,6 +241,10 @@ namespace Dracula {
             }
         }
 
+        if (!antiEvasionMarkdown.empty()) {
+            md << antiEvasionMarkdown;
+        }
+
         return md.str();
     }
 
@@ -258,6 +292,17 @@ namespace Dracula {
         out << row("Threat score",
                    std::to_string(threatScore) + " / 100   " + verdict,
                    Terminal::Color(scoreRole));
+
+        // Environment sensitivity is a separate axis from threat. A program can
+        // be highly environment-sensitive and entirely benign.
+        if (antiEvasionScore >= 0) {
+            ColorRole aeRole = ColorRole::Success;
+            if (antiEvasionScore >= 70)      aeRole = ColorRole::Error;
+            else if (antiEvasionScore >= 35) aeRole = ColorRole::Warning;
+            out << row("Environment sensitivity",
+                       std::to_string(antiEvasionScore) + " / 100   " + antiEvasionSensitivity,
+                       Terminal::Color(aeRole));
+        }
 
         out << "\n  " << second << "Mitigations" << reset << "\n";
         auto mitigation = [&](const char* name, bool enabled, bool criticalWhenOff) {

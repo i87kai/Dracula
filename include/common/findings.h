@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <cstdint>
 #include <chrono>
 #include <sstream>
@@ -248,6 +249,62 @@ namespace Dracula {
         std::string details;
     };
 
+    // ─── Execution coverage ───────────────────────────────────────────────────
+    //
+    // Recorded as sets and counters, never as a list of every executed address:
+    // a run of a few million instructions must not cost a few million entries.
+
+    struct ExecutionCoverage {
+        std::set<uint64_t> basicBlocks;      // block start addresses entered
+        std::set<uint64_t> functions;        // call targets + the entry point
+        uint64_t           instructionsExecuted = 0;
+        uint64_t           uniqueInstructionAddresses = 0;
+
+        size_t BlockCount() const { return basicBlocks.size(); }
+        size_t FunctionCount() const { return functions.size(); }
+    };
+
+    // ─── Observed environment inspection ─────────────────────────────────────
+    //
+    // One record per environment query the emulator answered. Raw and verbose
+    // by design; findings are promoted from these, not the other way round.
+
+    struct EnvironmentObservation {
+        std::string source;          // "CPUID", "RDTSC", "PEB", "Win32 HLE"
+        std::string property;        // "Hypervisor presence", "Processor count"
+        uint64_t    address = 0;     // instruction that performed the query
+        uint64_t    rva = 0;
+        uint64_t    inputValue = 0;  // CPUID leaf, API selector, ...
+        std::string suppliedValue;   // what Dracula answered
+        std::string baselineValue;   // what Baseline would have answered
+        bool        normalized = false; // supplied != baseline
+        std::string profile;
+        uint32_t    occurrences = 1;
+    };
+
+    // ─── Observed branch behaviour ───────────────────────────────────────────
+
+    struct BranchObservation {
+        uint64_t    address = 0;
+        uint64_t    rva = 0;
+        std::string mnemonic;
+        uint64_t    takenTarget = 0;
+        uint64_t    fallthrough = 0;
+        uint32_t    timesTaken = 0;
+        uint32_t    timesNotTaken = 0;
+
+        // Filled in when the branch decision was attributed to an environment
+        // value by the bounded provenance tracker.
+        bool        environmentInfluenced = false;
+        std::string influenceOrigin;     // "CPUID", "RDTSC", ...
+        std::string influenceProperty;   // "Hypervisor presence"
+        uint64_t    influenceProducedAt = 0;
+        uint64_t    influenceProducedRva = 0;
+        std::string compareText;
+
+        bool WasTaken() const { return timesTaken > 0; }
+    };
+
     struct EmulationResult {
         bool                success = false;
         EmulationStopReason stopReason = EmulationStopReason::NormalExit;
@@ -258,6 +315,14 @@ namespace Dracula {
         std::vector<HleCallRecord>      hleCalls;
         std::vector<DisassembledInstruction> trace;
         std::string         errorMessage;
+
+        // Anti-evasion instrumentation. Empty unless the run requested it.
+        std::string                         profileName;
+        ExecutionCoverage                   coverage;
+        std::vector<EnvironmentObservation>  environmentObservations;
+        std::vector<BranchObservation>       branches;
+        bool                                timeWasNormalized = false;
+        uint64_t                            logicalElapsedMs = 0;
     };
 
     // ─── Cross References (XREFs) ─────────────────────────────────────────────
@@ -307,6 +372,16 @@ namespace Dracula {
         std::vector<XRefEntry>         xrefs;
         EmulationResult                emulation;
         std::vector<Finding>           findings;
+
+        // ── Anti-Evasion ──
+        // Held as the engine's own serialized forms so the shared data model
+        // does not have to depend on the engine. antiEvasionJson is a complete
+        // JSON object and is embedded as structured data, never as a string.
+        int          antiEvasionScore = -1;      // -1 == the engine was not run
+        std::string  antiEvasionSensitivity;
+        std::string  antiEvasionStatus;
+        std::string  antiEvasionJson;
+        std::string  antiEvasionMarkdown;
 
         int                            threatScore = 0; // 0 to 100
         std::string                    threatLevel = "Clean"; // Clean, Low, Medium, High, Critical

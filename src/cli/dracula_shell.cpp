@@ -15,6 +15,8 @@
 #include "core/strings_analyzer.h"
 #include "core/pattern_scanner.h"
 #include "core/unicorn_analyzer.h"
+#include "core/anti_evasion_engine.h"
+#include "core/threat_evaluator.h"
 
 #include <iostream>
 #include <sstream>
@@ -916,6 +918,106 @@ namespace Dracula {
         std::cout << res.ToAnsiSummary();
     }
 
+    void DraculaShell::HandleAntiEvasion(const std::vector<std::string>& args) {
+        std::string file = ResolveTargetFile(args, 0);
+        if (file.empty()) {
+            ReportMissingTarget("antievasion");
+            return;
+        }
+
+        AntiEvasionOptions opts;
+        bool profileGiven = false;
+
+        for (size_t i = 0; i < args.size(); ++i) {
+            const std::string& a = args[i];
+            if (a == "--compare") {
+                opts.runComparison = true;
+            } else if (a == "--detect") {
+                opts.runComparison = false;
+            } else if (a == "--details" || a == "--detail") {
+                opts.detailed = true;
+            } else if (a == "--no-emulation") {
+                opts.useEmulation = false;
+            } else if (a == "--profile" && i + 1 < args.size()) {
+                ProfileKind kind;
+                if (ParseProfileKind(args[i + 1], kind)) {
+                    opts.detectionProfile = kind;
+                    profileGiven = true;
+                } else {
+                    Ui::Warning("Unknown profile '" + args[i + 1] +
+                                "'. Valid: baseline, realistic, analysis-friendly.");
+                    return;
+                }
+            }
+        }
+
+        if (profileGiven && opts.runComparison) {
+            Ui::Note("--profile selects the single detection profile; it is ignored in "
+                     "--compare mode, which runs every comparison profile.");
+        }
+
+        Ui::Info(opts.runComparison
+                     ? "Running differential anti-evasion analysis on " + file
+                     : "Running anti-evasion detection on " + file);
+
+        // Reuse the active session's parsed PE, disassembly, CFG, XRefs and
+        // strings when it describes this same sample. Nothing is reparsed
+        // blindly.
+        const UnifiedAnalysisResult* precomputed = nullptr;
+        if (m_sessionResult && m_sessionResult->sample.filePath == file) {
+            precomputed = m_sessionResult.get();
+        }
+
+        AntiEvasionEngine engine;
+        auto result = engine.Analyze(file, opts, precomputed);
+
+        std::cout << result.ToAnsiReport(opts.detailed);
+
+        // Fold the results into the session so /findings, /report and /session
+        // all see them without anyone re-running the engine.
+        if (!m_sessionResult || m_sessionResult->sample.filePath != file) {
+            OrchestratorOptions oopts;
+            oopts.enableEmulation = false;   // the engine already executed it
+            auto base = m_orchestrator.AnalyzeFile(file, oopts);
+            m_sessionResult = std::make_unique<UnifiedAnalysisResult>(std::move(base));
+        } else {
+            // Drop the previous anti-evasion findings so a second run replaces
+            // rather than accumulates.
+            auto& findings = m_sessionResult->findings;
+            findings.erase(std::remove_if(findings.begin(), findings.end(),
+                                          [](const Finding& f) {
+                                              return f.source == "Anti-Evasion Engine";
+                                          }),
+                           findings.end());
+        }
+
+        auto aeFindings = result.ToFindings();
+        m_sessionResult->findings.insert(m_sessionResult->findings.end(),
+                                         aeFindings.begin(), aeFindings.end());
+        m_sessionResult->antiEvasionScore = result.environmentSensitivityScore;
+        m_sessionResult->antiEvasionSensitivity = result.sensitivityLabel;
+        m_sessionResult->antiEvasionStatus = AntiEvasionStatusToString(result.status);
+        m_sessionResult->antiEvasionJson = result.ToJson();
+        m_sessionResult->antiEvasionMarkdown = result.ToMarkdown();
+
+        auto threat = ThreatEvaluator::Evaluate(m_sessionResult->findings,
+                                                m_sessionResult->sample,
+                                                m_sessionResult->mitigations,
+                                                m_sessionResult->overallEntropy,
+                                                m_sessionResult->isPacked);
+        m_sessionResult->threatScore = threat.score;
+        m_sessionResult->threatLevel = threat.level;
+        m_sessionResult->threatReasoning = threat.reasoning;
+        m_sessionResult->mitreAttackTechniques = threat.mitreTechniques;
+
+        if (!opts.runComparison && !result.techniques.empty()) {
+            Ui::Note("Run /antievasion --compare to test whether these checks actually "
+                     "change behavior.");
+        }
+        Ui::Success(std::to_string(aeFindings.size()) +
+                    " anti-evasion finding(s) added to the session.");
+    }
+
     void DraculaShell::HandleFunctions(const std::vector<std::string>& args) {
         std::string file = ResolveTargetFile(args, 0);
         if (file.empty()) {
@@ -1241,6 +1343,8 @@ namespace Dracula {
         else if (arg1 == "--strings") command = "strings";
         else if (arg1 == "--entropy") command = "entropy";
         else if (arg1 == "--sandbox") command = "sandbox";
+        else if (arg1 == "--anti-evasion" || arg1 == "--antievasion" ||
+                 arg1 == "--antivm" || arg1 == "--evasion") command = "antievasion";
         else if (arg1 == "--scan") command = "scan";
         else if (arg1 == "--functions") command = "functions";
         else if (arg1 == "--xrefs") command = "xrefs";

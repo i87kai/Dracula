@@ -1,4 +1,62 @@
 ============================================================
+Dracula v1.1.0
+Release: 2026-08-17
+============================================================
+
+Added
+-----
+- Anti-Evasion Intelligence Engine. A first-class subsystem that detects, locates, explains and experimentally verifies code that changes its behaviour when it believes it is being analysed. It unifies static detection (Capstone, CFG, XRefs, imports, data-driven artifact rules) with controlled execution under explicit environment profiles, differential re-execution, and evidence correlation.
+- /antievasion command, with aliases /antivm, /evasion and /ae, registered through the central command registry so tab completion, the palette, /help, history and argument completion all work with no per-command special cases. Flags: --detect (default), --compare, --details, --profile <name>, --no-emulation.
+- Scripted CLI equivalents Dracula.exe --anti-evasion <file> [--compare], sharing the same engine as the REPL command. There is no second implementation.
+- EnvironmentProfile: the single place that decides what a sample running inside a Dracula analysis environment can observe about its host - CPU identity, CPUID answers, topology, memory, disk, firmware, MAC prefix, screen, uptime, input activity, debugger state and timing policy. Three profiles ship: Baseline (Dracula's default, honest about being an analysis environment), Realistic (ordinary desktop characteristics with virtualization evidence left intact), and AnalysisFriendly (selected indicators normalized so environment-gated paths become reachable).
+- VirtualTimeState: a coherent multi-clock model. RDTSC, RDTSCP, QueryPerformanceCounter, GetTickCount, GetTickCount64, timeGetTime and system uptime are all derived from one logical nanosecond counter, so they cannot disagree. An accelerated Sleep(5000) advances every source by 5000 ms together, which is exactly the consistency a sophisticated sample cross-checks for.
+- CPUID is now answered from the active profile through Unicorn's instruction hook: vendor string, family/model/stepping, logical processor count, the hypervisor-present bit (leaf 1 ECX[31]), the hypervisor vendor leaf (0x40000000), topology leaves and the brand string.
+- RDTSC and RDTSCP interception. Unicorn provides no instruction hook for either, so the encodings are recognised in the code hook, the registers are filled from the virtual clock and the program counter is stepped past the instruction. SIDT/SGDT/SLDT/STR/SMSW are recorded as evidence and left to execute natively rather than fabricated.
+- BranchInfluenceTracker: bounded, register-granular environment provenance. It follows an environment value from the instruction or API that produced it, through data movement and a small stack-spill and output-buffer map, into the compare that sets the flags and the conditional branch that reads them. This is what separates "the program asked" from "the answer decided what ran", and it is the main input to the confidence model.
+- EnvironmentConsistencyGraph: environment facts are modelled as claims made by a particular observable channel (CPUID, OS API, firmware, device metadata, timing). Two channels disagreeing about the same property is a contradiction, reported as PROFILE_COHERENCE_WARNING, because hiding one virtualization marker while exposing a contradictory one makes an environment MORE fingerprintable, not less. Every profile is validated before use.
+- Differential execution. --compare runs the same sample under several profiles and compares reached basic blocks, reached functions, branch directions, HLE call sets, instruction counts and termination reason, producing an ExecutionDelta and a set of BranchDivergence records naming the exact RVA that went the other way and what each path led to.
+- Environment Sensitivity Score, 0-100, on its own axis and deliberately NOT the malware threat score. Static detection contributes a capped floor of 25; the rest comes from observed divergence. Documented in DRACULA_GUIDE.md.
+- Execution coverage recording in Unicorn (basic blocks, functions, branch directions) as sets and counters rather than per-address lists, plus a deterministic BehaviorFingerprint per run suitable for regression testing.
+- Normalization audit trail. Every value Dracula supplies that differs from Baseline is recorded with its baseline value, supplied value, source and reason. Dracula never changes what a sample sees without saying so.
+- Environment-aware Win32 HLE handlers: GetSystemInfo, GetNativeSystemInfo, GlobalMemoryStatusEx, GetPhysicallyInstalledSystemMemory, GetSystemMetrics, GetLastInputInfo, GetComputerNameA/W, GetUserNameA/W, GetDiskFreeSpaceExA/W, GetSystemFirmwareTable, RegOpenKeyExA/W, SleepEx, GetTickCount64 and timeGetTime, all answering from the active profile and recording an observation.
+- Data-driven artifact rule table replacing scattered string comparisons. Each rule carries its provider, artifact type, category, base confidence and a note on why it is (or is not) meaningful. A bare vendor name is scored as the weak evidence it is; a CPUID hypervisor signature is not.
+- SandboxEnvironmentFingerprint: what Dracula's configured QEMU guest actually looks like from inside it, stated as an explicit list of observable properties with a fingerprintability score. It does not claim invisibility.
+- MCP tool analyze_anti_evasion, and an anti-evasion summary embedded in analyze_file. Both call the same engine; MCP holds no anti-evasion logic of its own.
+- Anti-evasion sections in the JSON, Markdown and terminal reports. JSON carries structured fields (techniques, differential_runs, branch_divergences, profiles, normalizations), embedded as a real nested object, never as formatted text.
+- Benign deterministic probe samples, built from source at build time: ae_cpuid_gate, ae_timing_gate, ae_resource_gate, ae_debug_gate, ae_combined_gate and ae_benign_sysinfo. None contains a payload; each inspects one environment property and takes one of two harmless code paths.
+- samples/antievasion/environment_probe.c, a benign program that prints environment ground truth as KEY=VALUE, usable natively and inside the guest to prove a profile is real rather than documentation only.
+- tests/test_anti_evasion.cpp: 198 checks across taxonomy, clock coherence, profile validation, artifact rules, provenance, CPUID and RDTSC machine code, static detection, differential execution, false positives, combined signals, CFG/XRef correlation, fingerprint determinism, scoring, serialization, command registry, session integration, MCP, sandbox fingerprint, bounds and observation mode.
+
+Changed
+-------
+- ThreatEvaluator now weights evasion evidence by context. On its own it is halved and capped at 15 points, so no amount of virtualization detection can carry a verdict by itself; alongside independent malicious evidence it counts in full, capped at 25, because that is when evading analysis is meaningful. Anti-VM is not malware: development tools, games and licensing systems all inspect their environment legitimately.
+- The static gate scan now continues past a call instead of stopping at it, so the very common "call IsDebuggerPresent; test al, al; je" shape is detected rather than missed.
+- EmulationResult carries coverage, environment observations, branch observations, the active profile name and the logical elapsed time. All are empty unless a run asks for the instrumentation, so ordinary /analyze and /emulate pay nothing for it.
+- The QEMU sandbox fingerprint resolves config/config.ini through the standard resource path, so it describes the guest that is actually configured rather than the built-in defaults.
+
+Fixed
+-----
+- HleCallRecord.callerRva was never populated, so every HLE call in a report pointed at RVA 0. It is now set from the caller's return address.
+
+Verified
+--------
+- Clean Release build (GCC 16.1.0 MinGW-w64, CMake 4.3.3, MinGW Makefiles, Release) with no warnings or errors in project-owned code.
+- 198 anti-evasion checks pass, 226 terminal UI checks pass, 112 analysis-core checks pass, test_emulate_buffer passes. 0 failures.
+- Real differential demonstration: build/samples/antievasion/ae_cpuid_gate.exe scores 72/100 environment sensitivity. Baseline reaches 4 blocks and 3 functions and takes the branch at RVA 0x10D5 to an early exit; AnalysisFriendly falls through the same branch and reaches 18 blocks and 8 functions. The divergence is attributed to CPUID (hypervisor presence) by the provenance tracker. ae_combined_gate scores 84/100 with three independent gates reported separately plus one overall conclusion.
+- False-positive control: ae_benign_sysinfo queries CPUID, the processor count, the performance counter and the tick count without gating on any of them. It scores 14/100, reaches identical coverage (11 blocks, 5 functions, 217 instructions) under all three profiles, and no technique is claimed to control flow.
+- Threat restraint confirmed: ae_cpuid_gate scores 72/100 environment sensitivity but only 12/100 threat, reported as Clean / Benign.
+- Real MCP round trip against a benign anti-VM sample returns the structured result on a single line, keeping stdout pure JSON-RPC.
+- Interactive session verified end to end: /help antievasion, /analyze, /antievasion, /antievasion --compare, /findings, /report json and /session, with the fixed-header scrolling layout intact.
+
+Known limitations
+-----------------
+- Live QEMU guest verification is BLOCKED BY ENVIRONMENT. Dracula's telemetry listener binds host port 8899 before launching QEMU, whose "hostfwd=tcp::8899-:8899" rule needs the same host port, so QEMU exits immediately with "Could not set up host forwarding rule". Confirmed by diagnosis: port 8899 is free, and QEMU starts normally with that rule when Dracula is not already listening. This is a pre-existing defect in the QEMU sandbox path, independent of the anti-evasion work, and it is not fixed here. QEMU sandbox support in this release is therefore limited to environment fingerprinting, which does not require booting the guest.
+- Static branch correlation is intraprocedural. A check whose conditional branch lives in a different function than the check itself is caught by the dynamic provenance tracker, not by the static scan.
+- Provenance is register-granular with a bounded stack-spill and output-buffer map. It drops marks it cannot follow (arbitrary memory, SIMD, indirect control flow) rather than guessing, so it under-reports rather than inflating confidence.
+- Windows exception-based anti-debug semantics are not modelled in Unicorn. Such patterns are reported as detected statically and are explicitly not claimed to be modelled.
+- No virtual environment can be made indistinguishable from physical hardware. Dracula reports what its environments expose; it does not claim to hide them.
+
+============================================================
 Dracula v1.0.5
 Release: 2026-08-17
 ============================================================

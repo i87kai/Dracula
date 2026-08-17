@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.0.5 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.1.0 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-17")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
@@ -73,7 +73,14 @@ set(DRACULA_CORE_SOURCES
     src/core/unicorn_analyzer.cpp
     src/core/threat_evaluator.cpp
     src/core/dynamic_vm_analyzer.cpp
+    src/core/environment_profile.cpp
+    src/core/virtual_time.cpp
+    src/core/branch_influence.cpp
+    src/core/evasion_artifact_rules.cpp
+    src/core/anti_evasion_engine.cpp
+    src/core/anti_evasion_report.cpp
     src/core/c_api.cpp
+    src/host/sandbox_fingerprint.cpp
     src/host/qemu_manager.cpp
     src/host/live_tcp_server.cpp
     src/host/report_writer.cpp
@@ -141,6 +148,63 @@ if(WIN32)
     target_link_libraries(GuestAgent PRIVATE ws2_32 iphlpapi)
 endif()
 
+# ─── Benign Anti-Evasion Probe Samples ──────────────────────────────────────
+#
+# Deterministic, payload-free programs that inspect one environment property
+# and then take one of two harmless code paths. They are built freestanding so
+# the entry point is the first thing that runs and every call they make is a
+# Win32 import Dracula's HLE layer models.
+#
+set(DRACULA_AE_SAMPLES
+    ae_cpuid_gate
+    ae_timing_gate
+    ae_resource_gate
+    ae_debug_gate
+    ae_combined_gate
+    ae_benign_sysinfo
+)
+set(DRACULA_AE_SAMPLE_DIR "${CMAKE_CURRENT_BINARY_DIR}/samples/antievasion")
+file(MAKE_DIRECTORY ${DRACULA_AE_SAMPLE_DIR})
+
+set(DRACULA_AE_SAMPLE_OUTPUTS "")
+foreach(sample ${DRACULA_AE_SAMPLES})
+    set(sample_out "${DRACULA_AE_SAMPLE_DIR}/${sample}.exe")
+    add_custom_command(
+        OUTPUT ${sample_out}
+        COMMAND ${CMAKE_C_COMPILER}
+                -O1 -fno-asynchronous-unwind-tables
+                -nostdlib -nostartfiles
+                -Wl,-e,entry -Wl,--subsystem,console
+                -o ${sample_out}
+                ${CMAKE_CURRENT_SOURCE_DIR}/samples/antievasion/${sample}.c
+                -lkernel32
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/samples/antievasion/${sample}.c
+                ${CMAKE_CURRENT_SOURCE_DIR}/samples/antievasion/ae_common.h
+        COMMENT "Building benign anti-evasion probe ${sample}.exe"
+        VERBATIM
+    )
+    list(APPEND DRACULA_AE_SAMPLE_OUTPUTS ${sample_out})
+endforeach()
+
+# The environment probe is an ordinary console program rather than a
+# freestanding one: it has to print, and it is meant to run natively, inside
+# QEMU, and anywhere else a ground-truth reading of the environment is wanted.
+set(DRACULA_ENV_PROBE "${DRACULA_AE_SAMPLE_DIR}/environment_probe.exe")
+add_custom_command(
+    OUTPUT ${DRACULA_ENV_PROBE}
+    COMMAND ${CMAKE_C_COMPILER}
+            -O1 -Wall
+            -o ${DRACULA_ENV_PROBE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/samples/antievasion/environment_probe.c
+            -ladvapi32 -lkernel32 -luser32
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/samples/antievasion/environment_probe.c
+    COMMENT "Building the benign environment probe"
+    VERBATIM
+)
+list(APPEND DRACULA_AE_SAMPLE_OUTPUTS ${DRACULA_ENV_PROBE})
+
+add_custom_target(AntiEvasionSamples ALL DEPENDS ${DRACULA_AE_SAMPLE_OUTPUTS})
+
 # ─── Comprehensive Test Suite ────────────────────────────────────────────────
 if(BUILD_TESTS)
     enable_testing()
@@ -159,4 +223,12 @@ if(BUILD_TESTS)
     add_executable(test_terminal_ui tests/test_terminal_ui.cpp)
     target_link_libraries(test_terminal_ui PRIVATE DraculaCore)
     add_test(NAME TerminalUi COMMAND test_terminal_ui)
+
+    # 4. Anti-Evasion Intelligence Engine suite
+    add_executable(test_anti_evasion tests/test_anti_evasion.cpp)
+    target_link_libraries(test_anti_evasion PRIVATE DraculaCore)
+    target_compile_definitions(test_anti_evasion PRIVATE
+        DRACULA_AE_SAMPLE_DIR="${DRACULA_AE_SAMPLE_DIR}")
+    add_dependencies(test_anti_evasion AntiEvasionSamples)
+    add_test(NAME AntiEvasion COMMAND test_anti_evasion)
 endif()

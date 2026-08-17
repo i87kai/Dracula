@@ -1,4 +1,6 @@
 #include "mcp/mcp_server.h"
+#include "core/anti_evasion_engine.h"
+#include "core/threat_evaluator.h"
 #include "host/report_writer.h"
 #include "common/version.h"
 #include <iostream>
@@ -77,7 +79,8 @@ namespace Dracula {
                    "{\"name\":\"disassemble_code\",\"description\":\"Disassemble machine code at binary entry point or specific RVA.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to binary\"},\"rva\":{\"type\":\"string\",\"description\":\"Target RVA (optional)\"}},\"required\":[\"file_path\"]}},"
                    "{\"name\":\"extract_strings\",\"description\":\"Extract and classify ASCII and UTF-16LE Unicode strings.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to binary\"},\"min_length\":{\"type\":\"number\",\"description\":\"Minimum length (default 4)\"}},\"required\":[\"file_path\"]}},"
                    "{\"name\":\"calculate_entropy\",\"description\":\"Compute Shannon entropy for entire binary and individual sections to detect packing/encryption.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to binary\"}},\"required\":[\"file_path\"]}},"
-                   "{\"name\":\"scan_hex_pattern\",\"description\":\"Scan binary for wildcard hex pattern (AOB).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\"},\"pattern\":{\"type\":\"string\",\"description\":\"Hex pattern with ?? wildcards\"}},\"required\":[\"file_path\",\"pattern\"]}}"
+                   "{\"name\":\"scan_hex_pattern\",\"description\":\"Scan binary for wildcard hex pattern (AOB).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\"},\"pattern\":{\"type\":\"string\",\"description\":\"Hex pattern with ?? wildcards\"}},\"required\":[\"file_path\",\"pattern\"]}},"
+                   "{\"name\":\"analyze_anti_evasion\",\"description\":\"Detect and explain anti-VM, anti-sandbox, anti-debug and timing evasion. Set compare=true to run the sample under multiple controlled environment profiles and prove whether behavior actually changes. Returns structured techniques, differential runs, branch divergences and the full normalization audit trail. Detecting a virtual environment is not by itself malicious.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the binary\"},\"compare\":{\"type\":\"boolean\",\"description\":\"Run differential execution across environment profiles (slower, far stronger evidence)\"}},\"required\":[\"file_path\"]}}"
                    "]}}";
         }
 
@@ -92,8 +95,49 @@ namespace Dracula {
             if (toolName == "analyze_file") {
                 OrchestratorOptions opts;
                 auto res = m_orchestrator.AnalyzeFile(filePath, opts);
+
+                // Cheap static anti-evasion summary travels with every
+                // analyze_file result. Differential execution is deliberately
+                // NOT run here: it is expensive and must be asked for.
+                AntiEvasionOptions aeOpts;
+                aeOpts.runComparison = false;
+                aeOpts.useEmulation = false;
+                AntiEvasionEngine engine;
+                auto ae = engine.Analyze(filePath, aeOpts, &res);
+
+                auto aeFindings = ae.ToFindings();
+                res.findings.insert(res.findings.end(), aeFindings.begin(), aeFindings.end());
+                res.antiEvasionScore = ae.environmentSensitivityScore;
+                res.antiEvasionSensitivity = ae.sensitivityLabel;
+                res.antiEvasionStatus = AntiEvasionStatusToString(ae.status);
+                res.antiEvasionJson = ae.ToJson();
+                res.antiEvasionMarkdown = ae.ToMarkdown();
+
+                auto threat = ThreatEvaluator::Evaluate(res.findings, res.sample, res.mitigations,
+                                                        res.overallEntropy, res.isPacked);
+                res.threatScore = threat.score;
+                res.threatLevel = threat.level;
+                res.threatReasoning = threat.reasoning;
+                res.mitreAttackTechniques = threat.mitreTechniques;
+
                 std::string jsonContent = res.ToJson();
                 return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(jsonContent) + "\"}]}}";
+            }
+
+            if (toolName == "analyze_anti_evasion") {
+                // Same engine as /antievasion and --anti-evasion. MCP holds no
+                // anti-evasion logic of its own.
+                AntiEvasionOptions opts;
+                std::smatch compareMatch;
+                std::regex compareRe("\"compare\"\\s*:\\s*(true|false)");
+                if (std::regex_search(requestJson, compareMatch, compareRe) && compareMatch.size() > 1) {
+                    opts.runComparison = (compareMatch[1].str() == "true");
+                }
+                opts.detailed = true;
+
+                AntiEvasionEngine engine;
+                auto ae = engine.Analyze(filePath, opts);
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(ae.ToJson()) + "\"}]}}";
             }
 
             if (toolName == "inspect_pe_headers") {

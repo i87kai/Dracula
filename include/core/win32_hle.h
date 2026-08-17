@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/findings.h"
+#include "core/virtual_time.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -28,6 +29,11 @@ namespace Dracula {
         std::vector<uint64_t> args;
         AntiDebugPolicy antiDebugPolicy = AntiDebugPolicy::Bypass;
         bool        is64Bit = true;
+
+        // The controlled environment this call is answered from. Null for
+        // legacy callers, in which case handlers fall back to their historical
+        // constants.
+        EnvironmentRuntime* env = nullptr;
     };
 
     using HleHandlerFunc = std::function<uint64_t(uc_engine* uc, const HleCallContext& ctx, std::string& outDetails, std::vector<Finding>& outFindings)>;
@@ -56,6 +62,12 @@ namespace Dracula {
         void SetAntiDebugPolicy(AntiDebugPolicy policy) { m_policy = policy; }
         AntiDebugPolicy GetAntiDebugPolicy() const { return m_policy; }
 
+        // Bind the controlled environment every environment-answering handler
+        // reads from, so the HLE layer and instruction-level interception can
+        // never disagree about the same machine.
+        void SetEnvironmentRuntime(EnvironmentRuntime* env) { m_env = env; }
+        EnvironmentRuntime* GetEnvironmentRuntime() const { return m_env; }
+
         // Constants
         static constexpr uint64_t kHleThunkBase = 0x7FFF80000000ULL;
         static constexpr uint64_t kMockTeb64    = 0x7FFDF0000000ULL;
@@ -70,6 +82,7 @@ namespace Dracula {
         void InitializeDefaultHandlers();
 
         AntiDebugPolicy m_policy = AntiDebugPolicy::Bypass;
+        EnvironmentRuntime* m_env = nullptr;
         std::map<std::string, HleHandlerFunc> m_handlers; // Key: "library!api" (lowercase)
         std::map<uint64_t, std::pair<std::string, std::string>> m_thunkMap;
         std::map<std::string, uint64_t> m_apiToThunk;

@@ -31,6 +31,14 @@ Centerpiece Executable: **`Dracula.exe`**
   * Dynamic wildcard pattern scanner accepting arbitrary runtime signatures (e.g. `48 8B 05 ?? ?? ?? ?? 48 85 C0`).
 * 📊 **Shannon Entropy & Packer Detector:**
   * Section-by-section mathematical entropy ($H = -\sum p_i \log_2 p_i$) and packer signature detection (UPX, ASPack, Themida, VMProtect, MPRESS).
+* 🕵️ **Anti-Evasion Intelligence & Differential Execution:**
+  * Detects, locates and explains code that changes behaviour when it believes it is being analyzed — anti-VM, anti-sandbox, anti-debug, timing gates and instrumentation checks.
+  * **Controlled environment profiles** (`Baseline`, `Realistic`, `AnalysisFriendly`) decide exactly what a sample can observe about its host: CPUID answers, hypervisor exposure, CPU topology, memory, disk, firmware, MAC prefix, screen, uptime and input activity.
+  * **Coherent multi-clock model**: RDTSC, RDTSCP, QueryPerformanceCounter, GetTickCount and uptime all derive from one logical counter, so an accelerated `Sleep(5000)` advances every clock by 5000 ms together instead of contradicting itself.
+  * **Bounded branch-influence provenance** separates *"the program asked"* from *"the answer decided what ran"* — the distinction the entire confidence model rests on.
+  * **Differential execution** (`--compare`) re-runs the sample under multiple profiles and reports the exact branch RVA that went the other way, the blocks and functions only one run reached, and how each run ended.
+  * **Environment coherence validator** catches profiles that contradict themselves (hypervisor bit hidden while the vendor leaf still answers, CPUID topology disagreeing with the OS API, a physical-looking profile exposing a QEMU disk model) and scores how fingerprintable an environment is.
+  * **Full normalization audit trail**: every value Dracula supplies that differs from Baseline is recorded with its baseline value, supplied value, source and reason. Nothing is changed silently.
 * 🎯 **Evidence-Based Multi-Signal Threat Evaluator:**
   * Transparent corroboration of static, entropy, emulation, and sandbox signals into a 0-100 score and automated **MITRE ATT&CK Matrix**.
 * 🤖 **Native Model Context Protocol (MCP) Server:**
@@ -80,12 +88,80 @@ dracula ❯ /analyze samples\test_sample.exe
 dracula ❯ /security
 dracula ❯ /disasm
 dracula ❯ /cfg
+dracula ❯ /antievasion
+dracula ❯ /antievasion --compare
 dracula ❯ /findings
 dracula ❯ /report json test_report.json
 dracula ❯ /session
 dracula ❯ /changelog 1.0.0
 dracula ❯ /exit
 ```
+
+### Anti-Evasion Analysis
+
+Find code that behaves differently when it thinks it is being analyzed, and
+prove whether the check actually matters:
+
+```
+dracula ❯ /help antievasion            # modes, profiles, confidence, evidence
+dracula ❯ /analyze sample.exe
+dracula ❯ /antievasion                 # reuses the active sample
+dracula ❯ /antievasion --compare       # differential execution across profiles
+dracula ❯ /antievasion --details       # full evidence and audit trail
+```
+
+`/antievasion` also answers to `/antivm`, `/evasion` and `/ae`.
+
+Two modes, and the difference matters:
+
+| Mode | What it does | What it proves |
+|---|---|---|
+| `--detect` (default) | Static detection plus one controlled emulation run | A check **exists**, and whether its value reaches a branch |
+| `--compare` | Runs the sample under several environment profiles and compares coverage, branches, API calls and termination | The check **matters**: behaviour actually changed |
+
+**Environment sensitivity score (0–100)** answers one question: *how strongly
+did behaviour change when the analysis environment changed?* Static detection
+alone is capped at 25 — finding a check is not the same as watching it fire.
+The rest comes from observed divergence: branches that flipped, code only one
+run reached, and runs that ended differently.
+
+This score is **not** a malware score, and Dracula keeps the two apart. In the
+worked example below the sample scores 72/100 for environment sensitivity and
+12/100 for threat, reported as *Clean / Benign* — because detecting a virtual
+machine is something development tools, games, licensing systems and
+enterprise software all do for entirely legitimate reasons.
+
+Real output from `build/samples/antievasion/ae_cpuid_gate.exe`, a benign probe
+built from source in this repository:
+
+```
+  Environment sensitivity   72 / 100   Clear
+  Confidence                Very High
+  Status                    BehaviorDiverged
+
+  Anti-VM CPUID
+    RVA           0x10CF
+    Confidence    High
+    Property      Hypervisor presence
+    Control flow  value flows into `test ecx, ecx` and decides the branch
+                  `js 0x1400010e7` at RVA 0x10D5
+
+  Differential execution
+    Baseline            4 blocks    3 functions    14 instructions
+    Realistic           4 blocks    3 functions    14 instructions
+    AnalysisFriendly   18 blocks    8 functions    63 instructions
+
+  Key divergence
+    RVA 0x10D5   js 0x1400010e7
+      Baseline            branch taken -> 0x1400010E7
+      AnalysisFriendly    fallthrough -> 0x1400010D7, reaching 16 block(s)
+                          the reference run never entered
+      Attributed to       CPUID (Hypervisor presence)
+```
+
+> Dracula does **not** claim to make a virtual environment indistinguishable
+> from physical hardware — no general-purpose VM can be. It reports precisely
+> what its environments expose, and records every value it supplies.
 
 ### Scripted CLI Mode
 
@@ -104,6 +180,12 @@ Dracula.exe --disasm sample.exe 0x1000 50
 
 # Render Control Flow Graph
 Dracula.exe --cfg sample.exe
+
+# Detect anti-VM / anti-sandbox / anti-debug behaviour
+Dracula.exe --anti-evasion sample.exe
+
+# Prove it by re-running under multiple controlled environment profiles
+Dracula.exe --anti-evasion sample.exe --compare
 
 # Scan for wildcard pattern
 Dracula.exe --scan sample.exe "48 8B 05 ?? ?? ?? ?? 48 85 C0"

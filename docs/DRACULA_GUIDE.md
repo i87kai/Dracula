@@ -1,5 +1,5 @@
 # 🧛 DRACULA BINARY INTELLIGENCE & REVERSE-ENGINEERING PLATFORM
-## Technical Architecture & Developer Guide (v1.0.0)
+## Technical Architecture & Developer Guide (v1.1.0)
 
 ---
 
@@ -127,6 +127,232 @@
   - `45 - 74`: **Suspicious**
   - `75 - 100`: **Critical Threat**
 - Generates MITRE ATT&CK technique tags (`T1055`, `T1497`, `T1027`, `T1059`, `T1071`, `T1547`, `T1105`).
+- **Evasion evidence is weighted by context.** On its own, anti-evasion evidence is
+  halved and hard-capped at 15 points, so no amount of virtualization detection can
+  carry a verdict by itself. Alongside independent malicious evidence it counts in
+  full (capped at 25), because that is when evading analysis is meaningful.
+
+---
+
+## 2.8 Anti-Evasion Intelligence Engine (`AntiEvasionEngine`)
+
+The engine answers a chain of questions, and keeps the answers separable so a
+report never blurs what was *seen* into what was *guessed*:
+
+```
+What anti-analysis technique exists?      -> static detection
+Where is it?                              -> RVA, function, basic block
+How was it detected?                      -> evidence kind, per item
+What is being inspected?                  -> environment property
+Did it influence control flow?            -> provenance
+Did behaviour change elsewhere?           -> differential execution
+How confident are we?                     -> corroboration, not enthusiasm
+```
+
+### 2.8.1 Static Anti-Evasion Detection
+
+Three independent sources, deliberately weighted very differently:
+
+| Source | What it finds | Confidence ceiling |
+|---|---|---|
+| **Capstone linear sweep** of every executable section | `CPUID`, `RDTSC`, `RDTSCP`, `SIDT`, `SGDT`, `SLDT`, `STR`, `SMSW`, hypervisor backdoor port I/O | High, but only when the result reaches a compare **and** a conditional branch |
+| **Imports** matched against a rule table | Timing, topology, memory, disk, firmware, device, registry, process, user-activity and debugger APIs | Medium for the handful rarely called except to fingerprint; Low otherwise |
+| **Strings** matched against the artifact rule table | Vendor names, guest processes, drivers, services, device ids, registry keys, MAC prefixes, analysis tooling | Low — a bare string is close to no evidence at all |
+
+For `CPUID` the engine recovers the **input leaf** by scanning backwards for the
+constant loaded into `EAX`, then classifies accordingly: leaf 1 is a hypervisor-
+presence check, `0x40000000` is a hypervisor vendor check, leaf `0xB`/`0x1F`/`4`
+is topology. It never claims more precision than the recovered dataflow supports.
+
+The forward scan continues past `call` instructions, because
+`call IsDebuggerPresent; test al, al; je` is one of the most common gate shapes
+there is and stopping at the call would miss every one of them. It stops at
+`ret`, because the scan is intraprocedural.
+
+### 2.8.2 Environment Profiles (`EnvironmentProfile`)
+
+One place decides everything a sample can observe about its host. Nothing else
+in the tree is allowed to invent an environment value.
+
+| Profile | Hypervisor bit | Topology / RAM | Clock | Device & firmware |
+|---|---|---|---|---|
+| **Baseline** | set | 2 CPUs / 4 GB | frozen; `Sleep` is a no-op | QEMU disk, QEMU firmware, `52:54:00` |
+| **Realistic** | **set** | 8 CPUs / 32 GB | advances; sleeps elapse | unchanged — evidence is *not* suppressed |
+| **AnalysisFriendly** | clear | 8 CPUs / 32 GB | advances; sleeps elapse | Samsung SSD, AMI firmware, `3C:7C:3F` |
+
+`Baseline` reproduces Dracula's historical behaviour and is honest about being
+an analysis environment. `Realistic` makes the machine *ordinary*, not *lying*.
+Only `AnalysisFriendly` normalizes indicators, and every one of them lands in
+the audit trail.
+
+### 2.8.3 Timing Model (`VirtualTimeState`)
+
+Sophisticated samples do not read one clock; they read several and compare them.
+An environment that advances `GetTickCount` by 5000 ms while `RDTSC` advances by
+two cycles has announced exactly what it is.
+
+So there is exactly **one** authoritative quantity — a logical nanosecond
+counter — and every exposed clock is derived from it:
+
+```
+logical nanoseconds
+├── RDTSC / RDTSCP              nanos * tscHz / 1e9 + tscBase
+├── QueryPerformanceCounter     nanos * qpcHz / 1e9
+├── GetTickCount / 64           nanos / 1e6 + tickBase
+└── uptime                      nanos / 1e6 + bootUptime
+```
+
+The clocks *cannot* disagree; there is no second counter that could drift.
+Logical time advances from two things only: instructions retiring, and explicit
+advances such as an accelerated `Sleep`. Explicit advances are recorded.
+
+### 2.8.4 CPUID Model
+
+`CPUID` is answered from the active profile through Unicorn's instruction hook
+rather than by whatever the emulator's own CPU model happens to report, which
+makes runs reproducible and every answer attributable to a profile.
+
+| Leaf | Answered with |
+|---|---|
+| `0` | max basic leaf, vendor string |
+| `1` | family/model/stepping, logical processor count in `EBX[23:16]`, hypervisor bit in `ECX[31]` |
+| `4`, `0xB` | topology / cache parameters |
+| `0x40000000` | hypervisor vendor signature — or nothing at all, when the profile does not expose it |
+| `0x80000002-4` | brand string |
+
+`RDTSC` and `RDTSCP` have no Unicorn instruction hook, so their encodings are
+recognised in the code hook, the registers are filled from the virtual clock,
+and the program counter is stepped past the instruction. Descriptor-table reads
+(`SIDT`/`SGDT`/`SLDT`/`STR`/`SMSW`) are **recorded as evidence and left to
+execute natively** — Dracula models what they reveal, it does not fabricate
+descriptor tables it cannot honestly produce.
+
+### 2.8.5 Branch Influence Attribution (`BranchInfluenceTracker`)
+
+The single most important distinction in the engine:
+
+```
+environment info merely collected   vs   environment info controls execution
+```
+
+A bounded, register-granular provenance tracker follows a value from the
+instruction or API that produced it, through data movement and a small stack-spill
+and output-buffer map, into the compare that sets the flags and the conditional
+branch that reads them.
+
+It is **not** a full dynamic taint engine, and does not pretend to be. Anything
+it cannot follow — arbitrary memory, SIMD, indirect control flow — simply drops
+the mark. It under-reports rather than guessing, because an over-eager
+attribution would inflate confidence, which is the one thing this engine must
+never do. A write from an untainted source *clears* the mark.
+
+Because many environment APIs answer by filling a caller-supplied structure
+rather than returning a value, handlers declare the output buffer they wrote, and
+a later load out of that region carries the provenance into the destination
+register. That is how a `GetSystemInfo` processor count reaches its branch.
+
+### 2.8.6 Differential Execution
+
+```
+Run A — Baseline           Run B — Realistic         Run C — AnalysisFriendly
+        └──────────────────────────┴─────────────────────────┘
+                                   ▼
+                            ExecutionDelta
+        basic blocks · functions · branch directions · HLE calls
+        instruction count · termination reason · behaviour fingerprint
+```
+
+Coverage is recorded as **sets and counters**, never as a list of every executed
+address, so a multi-million-instruction run costs a bounded amount of memory.
+Each run also produces a deterministic `BehaviorFingerprint` (FNV-1a over
+coverage, API sequence and termination) that is stable enough for regression
+tests.
+
+`BranchDivergence` records name the exact RVA that went the other way, what each
+path led to, and — when provenance attributed it — which environment property
+decided it.
+
+### 2.8.7 Environment Consistency Graph
+
+A naive sandbox hides one VM marker while exposing ten contradictory ones, which
+makes it *more* identifiable, not less: real hardware never contradicts itself.
+
+Environment facts are modelled as **claims** made by a particular observable
+channel (`CPUID`, OS API, firmware table, device metadata, timing model). Two
+channels disagreeing about the same property is a contradiction, reported as
+`PROFILE_COHERENCE_WARNING`. Detected contradictions include:
+
+- hypervisor bit cleared while leaf `0x40000000` still answers *(critical)*
+- CPUID topology disagreeing with the OS processor count
+- a physical-looking profile still exposing QEMU firmware, disk or MAC
+- a frozen clock on a profile that presents as real hardware
+- a zero-frequency timing source
+- an "ordinary desktop" that models no user input activity at all
+
+**Fingerprintability (0-100)** counts visible virtualization markers, then adds
+a heavier penalty for each contradiction. Every shipped profile validates clean.
+
+### 2.8.8 Environment Sensitivity Score
+
+Separate from the malware threat score, and measuring a different thing:
+
+> How strongly did behaviour change when analysis-environment variables changed?
+
+| Input | Contribution |
+|---|---|
+| Static techniques (gated, high confidence) | 6 each, **capped at 25 in total** |
+| Static techniques (medium confidence) | 2 each, within the same cap |
+| Branch that changed direction, attributed | 20 each |
+| Branch that changed direction, unattributed | 12 each |
+| Basic blocks reached in only one run | 2 each, capped at 20 |
+| Functions reached in only one run | 4 each, capped at 20 |
+| Different termination reason | 15 |
+| APIs called in only one run | 3 each, capped at 12 |
+
+Clamped to 0-100. Bands: `0` None · `1-19` Minimal · `20-44` Weak ·
+`45-74` Clear · `75-100` Strong.
+
+Static detection is capped at 25 on purpose: **finding a check is not the same
+as watching it fire.** A high score does not mean malicious.
+
+### 2.8.9 Supported Detections
+
+| Technique | Statically detectable | Unicorn modelled | QEMU observable | Differentially verifiable |
+|---|---|---|---|---|
+| CPUID hypervisor bit | ✅ | ✅ | ✅ | ✅ |
+| CPUID hypervisor vendor leaf | ✅ | ✅ | ✅ | ✅ |
+| CPUID topology / vendor / brand | ✅ | ✅ | ✅ | ✅ |
+| RDTSC / RDTSCP timing deltas | ✅ | ✅ | ✅ | ✅ |
+| Tick count / QPC timing gates | ✅ | ✅ | ✅ | ✅ |
+| Sleep-elapsed gates | ✅ | ✅ | ✅ | ✅ |
+| Processor count / memory / disk size | ✅ | ✅ | ✅ | ✅ |
+| Screen dimensions, input activity | ✅ | ✅ | ✅ | ✅ |
+| Firmware / SMBIOS strings | ✅ | ✅ (modelled) | ✅ | ✅ |
+| Registry virtualization keys | ✅ | ✅ (modelled) | ✅ | ✅ |
+| `IsDebuggerPresent`, PEB `BeingDebugged` | ✅ | ✅ | ✅ | policy-driven |
+| MAC OUI, device & driver names | ✅ | partial (modelled values) | ✅ | partial |
+| Process / service enumeration | ✅ (imports, strings) | ❌ not modelled | ✅ | ❌ |
+| `SIDT`/`SGDT`/`SLDT`/`STR`/`SMSW` | ✅ | observed only, not fabricated | ✅ | ❌ |
+| Exception-based anti-debug | ✅ | ❌ not modelled | ✅ | ❌ |
+| Hardware breakpoint (DR register) checks | ✅ (imports) | ❌ not modelled | ✅ | ❌ |
+
+### 2.8.10 Limitations
+
+Stated plainly, because a tool that overstates its reach is worse than one that
+does less:
+
+- **No virtual environment can be made indistinguishable from physical
+  hardware.** Dracula reports what its environments expose; it does not hide them.
+- Static branch correlation is **intraprocedural**. Cross-function gates are
+  caught by dynamic provenance, not by the static scan.
+- Provenance is register-granular with a bounded spill and output-buffer map. It
+  drops what it cannot follow.
+- Windows exception semantics are not modelled in Unicorn; exception-based
+  anti-debug is reported as *detected statically* and never as *modelled*.
+- Process, service and driver enumeration is modelled as profile data, not as a
+  working Toolhelp/Service Control Manager implementation.
+- Differential execution is bounded: a fixed profile count, instruction budget
+  and time budget per run, with **no adaptive rerun loop**.
 
 ---
 
@@ -158,6 +384,7 @@ Prompt:
 | `/entropy <file>` | Calculate section-by-section Shannon entropy | `/entropy sample.exe` |
 | `/scan <file> <pattern>` | Scan for wildcard hex patterns | `/scan sample.exe "48 8B ?? ??"` |
 | `/sandbox <file>` | Launch QEMU dynamic VM isolation | `/sandbox sample.exe` |
+| `/antievasion [file] [--compare]` | Detect and analyze anti-VM / anti-sandbox behavior. Aliases: `/antivm`, `/evasion`, `/ae` | `/antievasion --compare` |
 | `/findings` | Display structured findings for active session | `/findings` |
 | `/report [json\|md\|txt] [out]` | Export session report to disk | `/report json out.json` |
 | `/session` | View current active sample metadata | `/session` |
@@ -169,6 +396,8 @@ Prompt:
 
 ```powershell
 Dracula.exe --analyze <path/to/binary.exe>
+Dracula.exe --anti-evasion <path/to/binary.exe>
+Dracula.exe --anti-evasion <path/to/binary.exe> --compare
 Dracula.exe --headers <path/to/binary.exe>
 Dracula.exe --security <path/to/binary.exe>
 Dracula.exe --disasm <path/to/binary.exe> [--rva 0x1000]
@@ -213,7 +442,8 @@ Or using the Python launcher:
 ```
 
 ### Exposed MCP Tools:
-- `analyze_file`: Full static + entropy + emulation pipeline returning unified JSON report.
+- `analyze_file`: Full static + entropy + emulation pipeline returning unified JSON report. Includes a cheap static anti-evasion summary; differential execution is deliberately **not** run here because it is expensive and must be asked for.
+- `analyze_anti_evasion`: Focused anti-evasion analysis. Pass `compare: true` to run the sample under multiple controlled environment profiles and prove whether behaviour actually changes. Returns structured techniques, differential runs, branch divergences and the normalization audit trail.
 - `inspect_pe_headers`: Headers, entry point, section tables.
 - `audit_security_mitigations`: ASLR, DEP, CFG, SEH, Authenticode, RWX.
 - `disassemble_code`: x86/x64 instruction disassembly.

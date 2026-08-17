@@ -260,6 +260,73 @@ namespace Dracula {
             }
         });
 
+        // 10b. /antievasion
+        Register({
+            .name = "antievasion",
+            .aliases = {"antivm", "evasion", "ae"},
+            .description = "Detect and analyze anti-VM / anti-sandbox behavior",
+            .usage = "/antievasion [file] [--detect|--compare] [--profile <name>] [--details]",
+            .category = "Analysis",
+            .detailedHelp =
+                "Finds code that changes what it does when it believes it is being analyzed, "
+                "shows where that code is, and can prove whether the check actually matters.\n"
+                "\n"
+                "MODES\n"
+                "  --detect    (default) Static detection plus one controlled emulation run. "
+                "Cheap. Reports what the sample inspects and whether the value reaches a branch.\n"
+                "  --compare   Differential execution. Runs the sample under several environment "
+                "profiles and compares reached blocks, functions, branches, API calls and "
+                "termination. This is the only mode that can PROVE behavior is environment-"
+                "sensitive rather than merely infer it.\n"
+                "  --details   Full evidence: every observation, the provenance chain, and the "
+                "complete normalization audit trail.\n"
+                "\n"
+                "PROFILES\n"
+                "  Baseline          Dracula's default environment. Honest about being an "
+                "analysis environment: hypervisor bit set, virtual device metadata, frozen clock.\n"
+                "  Realistic         Ordinary desktop characteristics (8 CPUs, 32 GB, a clock "
+                "that advances, sleeps that elapse) with virtualization evidence left intact.\n"
+                "  AnalysisFriendly  Selected analysis indicators normalized so environment-gated "
+                "code paths become reachable. Every normalized value is recorded.\n"
+                "\n"
+                "CONFIDENCE\n"
+                "  Low        a suspicious string, nothing more\n"
+                "  Medium     an environment API or instruction pattern is present\n"
+                "  High       the value is compared and controls a branch\n"
+                "  Very High  differential execution proved behavior changed\n"
+                "\n"
+                "OBSERVED vs INFERRED\n"
+                "  Each technique states how it was established: detected statically, modelled in "
+                "Unicorn, observed in QEMU, or verified differentially. Static detection says a "
+                "check EXISTS; only differential execution says it MATTERS.\n"
+                "\n"
+                "EVIDENCE AND AUDIT\n"
+                "  Every value Dracula supplies that differs from Baseline appears in the "
+                "normalization trail with its baseline value, supplied value and reason. Dracula "
+                "never changes what a sample sees without saying so.\n"
+                "\n"
+                "IMPORTANT\n"
+                "  Detecting a virtual environment is NOT evidence of malice. Development tools, "
+                "games, licensing systems and enterprise software all do it legitimately, so "
+                "environment sensitivity is scored on its own axis and contributes only a small, "
+                "capped amount to the threat score. No virtual environment can be made "
+                "indistinguishable from physical hardware, and Dracula does not claim otherwise.",
+            .examples = {
+                "/antievasion",
+                "/antievasion samples\\antievasion\\ae_cpuid_gate.exe",
+                "/antievasion --compare",
+                "/antievasion sample.exe --compare --details",
+                "/antievasion sample.exe --profile analysis-friendly"
+            },
+            .takesFilePath = true,
+            .requiresArgs = false,
+            .argCompletions = {"--detect", "--compare", "--details", "--profile"},
+            .flagCompletions = {{"--profile", {"baseline", "realistic", "analysis-friendly"}}},
+            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
+                shell.HandleAntiEvasion(args);
+            }
+        });
+
         // 11. /scan
         Register({
             .name = "scan",
@@ -458,7 +525,7 @@ namespace Dracula {
             .examples = {"/help", "/help analyze", "/help emulate"},
             .takesFilePath = false,
             .requiresArgs = false,
-            .argCompletions = {"analyze", "disasm", "headers", "security", "imports", "exports", "strings", "entropy", "emulate", "sandbox", "scan", "functions", "cfg", "xrefs", "findings", "report", "session", "mcp", "changelog", "version", "clear", "help", "exit"},
+            .argCompletions = {"analyze", "disasm", "headers", "security", "imports", "exports", "strings", "entropy", "emulate", "sandbox", "antievasion", "scan", "functions", "cfg", "xrefs", "findings", "report", "session", "mcp", "changelog", "version", "clear", "help", "exit"},
             .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
                 shell.HandleHelp(args);
             }
