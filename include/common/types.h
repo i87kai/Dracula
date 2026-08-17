@@ -76,13 +76,35 @@ namespace Sandbox {
         Error
     };
 
+    // Explicit role of a process in dynamic sandbox execution
+    enum class ProcessRole : uint32_t {
+        Unspecified = 0,
+        Target = 1,
+        Child = 2,
+        Descendant = 3,
+        Unrelated = 4
+    };
+
+    inline const char* ProcessRoleToString(ProcessRole role) {
+        switch (role) {
+            case ProcessRole::Target:      return "Target";
+            case ProcessRole::Child:       return "Child";
+            case ProcessRole::Descendant:  return "Descendant";
+            case ProcessRole::Unrelated:   return "Unrelated";
+            default:                       return "Unspecified";
+        }
+    }
+
     // Data structure representing a single trace event
     struct TraceEvent {
         EventType type = EventType::Info;
         uint64_t timestampMs = 0;
         uint64_t timestamp = 0;
         uint32_t pid = 0;
+        uint32_t parentPid = 0;
+        ProcessRole role = ProcessRole::Unspecified;
         std::string processName;
+        std::string commandLine;
         std::string category;
         std::string message;
         std::string details;

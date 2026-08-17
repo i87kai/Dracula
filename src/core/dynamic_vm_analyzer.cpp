@@ -57,7 +57,9 @@ namespace Sandbox {
 
             switch (event.type) {
                 case EventType::ProcessCreated:
-                    m_report.totalProcessesCreated++;
+                    if (event.role != ProcessRole::Target && event.message.find("Target Process") == std::string::npos) {
+                        m_report.totalProcessesCreated++;
+                    }
                     break;
                 case EventType::FileCreated:
                 case EventType::FileModified:

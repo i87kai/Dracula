@@ -56,6 +56,9 @@ namespace Sandbox::Protocol {
     //     -- everything below is OPTIONAL and read only if present --
     //     uint32  pid
     //     string  process name
+    //     uint32  parent pid
+    //     string  command line
+    //     uint32  process role
     //
     // The trailing fields were added after the original format shipped. They are
     // appended rather than inserted, and the reader treats them as optional, so
@@ -86,6 +89,19 @@ namespace Sandbox::Protocol {
         buffer.insert(buffer.end(), pidBytes, pidBytes + 4);
 
         AppendString(buffer, event.processName);
+
+        // Lineage extensions: parent PID, command line, and process role
+        uint8_t ppidBytes[4];
+        uint32_t ppid = event.parentPid;
+        std::memcpy(ppidBytes, &ppid, 4);
+        buffer.insert(buffer.end(), ppidBytes, ppidBytes + 4);
+
+        AppendString(buffer, event.commandLine);
+
+        uint8_t roleBytes[4];
+        uint32_t role = static_cast<uint32_t>(event.role);
+        std::memcpy(roleBytes, &role, 4);
+        buffer.insert(buffer.end(), roleBytes, roleBytes + 4);
 
         return buffer;
     }
@@ -120,6 +136,25 @@ namespace Sandbox::Protocol {
             if (ReadString(data, length, offset, processName)) {
                 outEvent.processName = processName;
             }
+        }
+
+        if (offset + 4 <= length) {
+            uint32_t ppid = 0;
+            std::memcpy(&ppid, data + offset, 4);
+            offset += 4;
+            outEvent.parentPid = ppid;
+
+            std::string cmdLine;
+            if (ReadString(data, length, offset, cmdLine)) {
+                outEvent.commandLine = cmdLine;
+            }
+        }
+
+        if (offset + 4 <= length) {
+            uint32_t role = 0;
+            std::memcpy(&role, data + offset, 4);
+            offset += 4;
+            outEvent.role = static_cast<ProcessRole>(role);
         }
 
         return true;
@@ -213,6 +248,32 @@ namespace Sandbox::Protocol {
             outEvent.message = text.substr(p3 + 1, last - p3 - 1);
             outEvent.details = text.substr(last + 1);
         }
+
+        // Recover process identity and role from legacy text if present
+        if (outEvent.pid == 0) {
+            size_t pidPos = outEvent.message.find("PID: ");
+            if (pidPos != std::string::npos) {
+                try {
+                    outEvent.pid = static_cast<uint32_t>(std::stoul(outEvent.message.substr(pidPos + 5)));
+                } catch (...) {}
+            }
+        }
+        if (outEvent.parentPid == 0) {
+            size_t ppidPos = outEvent.details.find("Parent PID: ");
+            if (ppidPos != std::string::npos) {
+                try {
+                    outEvent.parentPid = static_cast<uint32_t>(std::stoul(outEvent.details.substr(ppidPos + 12)));
+                } catch (...) {}
+            }
+        }
+        if (outEvent.role == ProcessRole::Unspecified) {
+            if (outEvent.message.find("Target Process") != std::string::npos) {
+                outEvent.role = ProcessRole::Target;
+            } else if (outEvent.message.find("Child Process") != std::string::npos) {
+                outEvent.role = ProcessRole::Child;
+            }
+        }
+
         return true;
     }
 

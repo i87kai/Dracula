@@ -74,8 +74,12 @@ namespace Sandbox::Guest {
                             evt.type = EventType::ProcessCreated;
                             evt.timestampMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::system_clock::now().time_since_epoch()).count());
+                            evt.pid = pe.th32ProcessID;
+                            evt.parentPid = pe.th32ParentProcessID;
+                            evt.processName = pe.szExeFile;
+                            evt.role = (pe.th32ParentProcessID == m_targetPid) ? ProcessRole::Child : ProcessRole::Descendant;
                             evt.category = "Process";
-                            evt.message = "Child Process Spawned: " + std::string(pe.szExeFile) + " (PID: " + std::to_string(pe.th32ProcessID) + ")";
+                            evt.message = "Child Process Created: " + std::string(pe.szExeFile) + " (PID: " + std::to_string(pe.th32ProcessID) + ")";
                             evt.details = "Parent PID: " + std::to_string(pe.th32ParentProcessID);
                             m_callback(evt);
                         }

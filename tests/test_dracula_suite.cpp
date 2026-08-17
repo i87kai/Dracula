@@ -914,6 +914,260 @@ static void TestSessionWorkflow() {
     AssertTest(shell.GetSessionResult()->findings.size() == 1, "Session findings collection remains accessible to /findings and /report");
 }
 
+// ─── 20. SANDBOX PROCESS LINEAGE & THREAT SCORING AUDIT ───────────────────
+static void TestSandboxProcessLineageAndThreatScoring() {
+    std::cout << "\n\033[1;36m=== [AUDIT 20] Sandbox Process Lineage, Corroboration & Threat Scoring ===\033[0m\n";
+
+    Dracula::SampleMetadata meta;
+    Dracula::SecurityMitigations sec;
+    sec.hasAslr = true;
+    sec.hasDep = true;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test A — Benign target only
+    // Dracula launches benign_probe.exe -> target starts -> target exits normally
+    // Expected: TARGET_PROCESS_STARTED recorded, Info severity, 0 threat weight,
+    //           no CHILD_PROCESS_CREATED, final score remains Clean/Benign (0).
+    {
+        std::vector<Sandbox::TraceEvent> events;
+        Sandbox::TraceEvent e1;
+        e1.type = Sandbox::EventType::Info;
+        e1.category = "GuestAgent";
+        e1.message = "Guest Agent started execution of: E:\\benign_probe.exe";
+
+        Sandbox::TraceEvent e2;
+        e2.type = Sandbox::EventType::ProcessCreated;
+        e2.category = "Process";
+        e2.pid = 1200;
+        e2.parentPid = 500; // GuestAgent PID preserved
+        e2.processName = "benign_probe.exe";
+        e2.commandLine = "benign_probe.exe";
+        e2.role = Sandbox::ProcessRole::Target;
+        e2.message = "Target Process Started: benign_probe.exe (PID: 1200)";
+        e2.details = "Parent PID: 500";
+
+        Sandbox::TraceEvent e3;
+        e3.type = Sandbox::EventType::ProcessTerminated;
+        e3.category = "Process";
+        e3.pid = 1200;
+        e3.parentPid = 500;
+        e3.role = Sandbox::ProcessRole::Target;
+        e3.message = "Target Process Exited with Code: 0";
+
+        events.push_back(e1);
+        events.push_back(e2);
+        events.push_back(e3);
+
+        auto findings = Dracula::ThreatEvaluator::NormalizeSandboxEvents(events);
+        AssertTest(findings.size() == 1, "Test A: Exactly 1 finding generated for benign target execution");
+        AssertTest(findings[0].id == "SBX_TARGET_PROCESS_STARTED", "Test A: Finding ID is SBX_TARGET_PROCESS_STARTED");
+        AssertTest(findings[0].severity == Dracula::FindingSeverity::Info, "Test A: Target start severity is Info");
+        AssertTest(findings[0].title.find("Target Process Started") != std::string::npos, "Test A: Accurate title 'Target Process Started'");
+        AssertTest(findings[0].evidence.find("Parent PID: 500") != std::string::npos, "Test A: Preserves real parent PID in lineage");
+
+        auto scoreRes = Dracula::ThreatEvaluator::Evaluate(findings, meta, sec, 4.0, false);
+        AssertTest(scoreRes.score == 0, "Test A: 0 direct threat score contribution from benign target execution");
+        AssertTest(scoreRes.level == "Clean / Benign", "Test A: Threat level is Clean / Benign");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test B — Normal child process
+    // target.exe -> benign_helper.exe
+    // Expected: child relationship recorded, Low severity, no unjustified Medium/High score.
+    {
+        std::vector<Sandbox::TraceEvent> events;
+        Sandbox::TraceEvent eTarget;
+        eTarget.type = Sandbox::EventType::ProcessCreated;
+        eTarget.category = "Process";
+        eTarget.pid = 1000;
+        eTarget.parentPid = 500;
+        eTarget.processName = "target.exe";
+        eTarget.role = Sandbox::ProcessRole::Target;
+        eTarget.message = "Target Process Started: target.exe (PID: 1000)";
+
+        Sandbox::TraceEvent eChild;
+        eChild.type = Sandbox::EventType::ProcessCreated;
+        eChild.category = "Process";
+        eChild.pid = 1001;
+        eChild.parentPid = 1000;
+        eChild.processName = "benign_helper.exe";
+        eChild.commandLine = "benign_helper.exe --worker";
+        eChild.role = Sandbox::ProcessRole::Child;
+        eChild.message = "Child Process Created: benign_helper.exe (PID: 1001)";
+        eChild.details = "Parent PID: 1000";
+
+        events.push_back(eTarget);
+        events.push_back(eChild);
+
+        auto findings = Dracula::ThreatEvaluator::NormalizeSandboxEvents(events);
+        AssertTest(findings.size() == 2, "Test B: Target start and child process both recorded");
+        AssertTest(findings[0].id == "SBX_TARGET_PROCESS_STARTED", "Test B: First finding is SBX_TARGET_PROCESS_STARTED");
+        AssertTest(findings[1].id == "SBX_CHILD_PROCESS_CREATED", "Test B: Normal child process is SBX_CHILD_PROCESS_CREATED");
+        AssertTest(findings[1].severity == Dracula::FindingSeverity::Low, "Test B: Normal child process severity is Low");
+        AssertTest(findings[1].evidence.find("Parent PID: 1000") != std::string::npos, "Test B: Child lineage recorded correctly");
+
+        auto scoreRes = Dracula::ThreatEvaluator::Evaluate(findings, meta, sec, 4.0, false);
+        AssertTest(scoreRes.score < 25, "Test B: Normal child process receives benign/low score (< 25)");
+        AssertTest(scoreRes.level == "Clean / Benign" || scoreRes.level == "Low Risk", "Test B: No unjustified Medium/High level");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test C — Corroborated suspicious child chain
+    // test_target.exe -> test_child.exe with suspicious arguments and corroboration
+    // Expected: Severity rises only because multiple evidence signals corroborate.
+    {
+        std::vector<Sandbox::TraceEvent> events;
+        Sandbox::TraceEvent eTarget;
+        eTarget.type = Sandbox::EventType::ProcessCreated;
+        eTarget.pid = 2000;
+        eTarget.parentPid = 500;
+        eTarget.processName = "test_target.exe";
+        eTarget.role = Sandbox::ProcessRole::Target;
+
+        Sandbox::TraceEvent eChild;
+        eChild.type = Sandbox::EventType::ProcessCreated;
+        eChild.pid = 2001;
+        eChild.parentPid = 2000;
+        eChild.processName = "powershell.exe";
+        eChild.commandLine = "powershell.exe -w hidden -enc aW52b2tlLWV4cHJlc3Npb24=";
+        eChild.role = Sandbox::ProcessRole::Child;
+
+        Sandbox::TraceEvent eNet;
+        eNet.type = Sandbox::EventType::NetworkConnect;
+        eNet.pid = 2001;
+        eNet.message = "Outbound TCP Connection to 192.168.1.100:4444";
+        eNet.details = "PID: 2001";
+
+        events.push_back(eTarget);
+        events.push_back(eChild);
+        events.push_back(eNet);
+
+        auto findings = Dracula::ThreatEvaluator::NormalizeSandboxEvents(events);
+        bool foundSuspicious = false;
+        for (const auto& f : findings) {
+            if (f.id == "SBX_SUSPICIOUS_CHILD_PROCESS") {
+                foundSuspicious = true;
+                AssertTest(f.severity >= Dracula::FindingSeverity::Medium, "Test C: Suspicious child process has Medium/High severity");
+                AssertTest(f.evidence.find("Encoded command line") != std::string::npos, "Test C: Corroborated by encoded command line arguments");
+                AssertTest(f.evidence.find("Hidden window") != std::string::npos, "Test C: Corroborated by hidden window flag");
+                AssertTest(f.evidence.find("network connection") != std::string::npos, "Test C: Corroborated by network connection");
+            }
+        }
+        AssertTest(foundSuspicious, "Test C: Corroborated suspicious child process finding generated");
+
+        auto scoreRes = Dracula::ThreatEvaluator::Evaluate(findings, meta, sec, 4.0, false);
+        AssertTest(scoreRes.score >= 30, "Test C: Threat score rises appropriately with corroborated suspicious evidence");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test D — Duplicate telemetry
+    // Send the same process event multiple times
+    // Expected: Threat score is not inflated by duplicate telemetry.
+    {
+        std::vector<Sandbox::TraceEvent> singleEvents;
+        Sandbox::TraceEvent eTarget;
+        eTarget.type = Sandbox::EventType::ProcessCreated;
+        eTarget.pid = 3000;
+        eTarget.parentPid = 500;
+        eTarget.processName = "sample.exe";
+        eTarget.role = Sandbox::ProcessRole::Target;
+        singleEvents.push_back(eTarget);
+
+        Sandbox::TraceEvent eChild;
+        eChild.type = Sandbox::EventType::ProcessCreated;
+        eChild.pid = 3001;
+        eChild.parentPid = 3000;
+        eChild.processName = "helper.exe";
+        eChild.role = Sandbox::ProcessRole::Child;
+        singleEvents.push_back(eChild);
+
+        auto singleFindings = Dracula::ThreatEvaluator::NormalizeSandboxEvents(singleEvents);
+        auto singleScore = Dracula::ThreatEvaluator::Evaluate(singleFindings, meta, sec, 4.0, false);
+
+        // Send same events 5 times
+        std::vector<Sandbox::TraceEvent> duplicatedEvents;
+        for (int i = 0; i < 5; ++i) {
+            duplicatedEvents.push_back(eTarget);
+            duplicatedEvents.push_back(eChild);
+        }
+
+        auto dupFindings = Dracula::ThreatEvaluator::NormalizeSandboxEvents(duplicatedEvents);
+        auto dupScore = Dracula::ThreatEvaluator::Evaluate(dupFindings, meta, sec, 4.0, false);
+
+        AssertTest(dupFindings.size() == singleFindings.size(), "Test D: Duplicate process telemetry is deduplicated during normalization");
+        AssertTest(dupScore.score == singleScore.score, "Test D: Threat score is identical between single and 5x duplicated telemetry");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test E — Same process name, different PID
+    // target.exe PID 1000 and target.exe PID 2000
+    // Expected: Different processes with identical names remain distinct events.
+    {
+        std::vector<Sandbox::TraceEvent> events;
+        Sandbox::TraceEvent e1;
+        e1.type = Sandbox::EventType::ProcessCreated;
+        e1.pid = 1000;
+        e1.parentPid = 500;
+        e1.processName = "target.exe";
+        e1.role = Sandbox::ProcessRole::Target;
+
+        Sandbox::TraceEvent e2;
+        e2.type = Sandbox::EventType::ProcessCreated;
+        e2.pid = 2000;
+        e2.parentPid = 1000;
+        e2.processName = "target.exe";
+        e2.role = Sandbox::ProcessRole::Child;
+
+        events.push_back(e1);
+        events.push_back(e2);
+
+        auto findings = Dracula::ThreatEvaluator::NormalizeSandboxEvents(events);
+        AssertTest(findings.size() == 2, "Test E: Two instances of target.exe with distinct PIDs yield 2 distinct findings");
+        AssertTest(findings[0].id == "SBX_TARGET_PROCESS_STARTED" && findings[0].evidence.find("PID: 1000") != std::string::npos,
+                   "Test E: First instance is Target PID 1000");
+        AssertTest(findings[1].id == "SBX_CHILD_PROCESS_CREATED" && findings[1].evidence.find("PID: 2000") != std::string::npos,
+                   "Test E: Second instance is Child PID 2000");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test F — Process lineage distinction
+    // Target -> Direct Child -> Descendant
+    // Expected: Lineage preserves Target, Child, and Descendant roles.
+    {
+        std::vector<Sandbox::TraceEvent> events;
+        Sandbox::TraceEvent eTarget;
+        eTarget.type = Sandbox::EventType::ProcessCreated;
+        eTarget.pid = 4000;
+        eTarget.parentPid = 500;
+        eTarget.processName = "root_target.exe";
+        eTarget.role = Sandbox::ProcessRole::Target;
+
+        Sandbox::TraceEvent eChild;
+        eChild.type = Sandbox::EventType::ProcessCreated;
+        eChild.pid = 4001;
+        eChild.parentPid = 4000;
+        eChild.processName = "cmd.exe";
+        eChild.role = Sandbox::ProcessRole::Child;
+
+        Sandbox::TraceEvent eDescendant;
+        eDescendant.type = Sandbox::EventType::ProcessCreated;
+        eDescendant.pid = 4002;
+        eDescendant.parentPid = 4001;
+        eDescendant.processName = "powershell.exe";
+        eDescendant.role = Sandbox::ProcessRole::Descendant;
+
+        events.push_back(eTarget);
+        events.push_back(eChild);
+        events.push_back(eDescendant);
+
+        auto findings = Dracula::ThreatEvaluator::NormalizeSandboxEvents(events);
+        AssertTest(findings.size() == 3, "Test F: 3 findings generated for 3-level process lineage");
+        AssertTest(findings[0].id == "SBX_TARGET_PROCESS_STARTED", "Test F: Root is SBX_TARGET_PROCESS_STARTED");
+        AssertTest(findings[1].id == "SBX_CHILD_PROCESS_CREATED", "Test F: Direct child is SBX_CHILD_PROCESS_CREATED");
+        AssertTest(findings[2].id == "SBX_SUSPICIOUS_CHILD_PROCESS", "Test F: Descendant shell chain is SBX_SUSPICIOUS_CHILD_PROCESS");
+    }
+}
+
 int main() {
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << "\033[1;31m 🧛 DRACULA DEEP VERIFICATION & AUDIT TEST HARNESS\033[0m\n";
@@ -938,6 +1192,7 @@ int main() {
     TestCommandHistoryLogic();
     TestChangelogParsing();
     TestSessionWorkflow();
+    TestSandboxProcessLineageAndThreatScoring();
 
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << " FINAL AUDIT RESULTS: \033[1;32m" << g_passCount << " PASSED\033[0m, \033[1;31m"

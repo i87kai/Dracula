@@ -1,3 +1,8 @@
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "guest/process_spawner.h"
 #include "guest/system_tracer.h"
 #include "guest/tcp_emitter.h"
@@ -82,6 +87,11 @@ int main(int argc, char* argv[]) {
 
     emitTrace(Sandbox::EventType::Info, "GuestAgent", "Guest Agent started execution of: " + targetExe);
 
+    uint32_t agentPid = 0;
+#ifdef _WIN32
+    agentPid = static_cast<uint32_t>(GetCurrentProcessId());
+#endif
+
     Sandbox::Guest::ProcessSpawner spawner;
 
     auto outCallback = [&](bool isStderr, const std::string& line) {
@@ -92,8 +102,18 @@ int main(int argc, char* argv[]) {
     };
 
     auto exitCallback = [&](uint32_t exitCode) {
-        emitTrace(Sandbox::EventType::ProcessTerminated, "Process",
-                  "Target Process Exited with Code: " + std::to_string(exitCode));
+        Sandbox::TraceEvent evt;
+        evt.type = Sandbox::EventType::ProcessTerminated;
+        evt.timestampMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+        evt.pid = spawner.GetProcessId();
+        evt.parentPid = agentPid;
+        evt.role = Sandbox::ProcessRole::Target;
+        evt.processName = targetExe;
+        evt.category = "Process";
+        evt.message = "Target Process Exited with Code: " + std::to_string(exitCode);
+        evt.details = "Exit Code: " + std::to_string(exitCode);
+        emitter.SendEvent(evt);
     };
 
     if (!spawner.Launch(targetExe, "", outCallback, exitCallback)) {
@@ -102,7 +122,21 @@ int main(int argc, char* argv[]) {
     }
 
     uint32_t pid = spawner.GetProcessId();
-    emitTrace(Sandbox::EventType::ProcessCreated, "Process", "Target Process Spawned (PID: " + std::to_string(pid) + ")");
+    {
+        Sandbox::TraceEvent evt;
+        evt.type = Sandbox::EventType::ProcessCreated;
+        evt.timestampMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+        evt.pid = pid;
+        evt.parentPid = agentPid;
+        evt.role = Sandbox::ProcessRole::Target;
+        evt.processName = targetExe;
+        evt.commandLine = targetExe;
+        evt.category = "Process";
+        evt.message = "Target Process Started: " + targetExe + " (PID: " + std::to_string(pid) + ")";
+        evt.details = "Parent PID: " + std::to_string(agentPid);
+        emitter.SendEvent(evt);
+    }
 
     // Start background system tracer for child processes, files, and network
     Sandbox::Guest::SystemTracer tracer(options, pid);

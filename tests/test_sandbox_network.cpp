@@ -524,6 +524,30 @@ static void TestTelemetryFraming() {
         Check(ok && decoded.message == "12345" && decoded.pid == 99,
               "A binary payload is never mistaken for the legacy text form");
     }
+    {
+        // Modern binary payload with process lineage and role fields
+        TraceEvent lineageSource;
+        lineageSource.type = EventType::ProcessCreated;
+        lineageSource.timestampMs = 123456789ULL;
+        lineageSource.category = "Process";
+        lineageSource.message = "Target Process Started: sample.exe (PID: 1000)";
+        lineageSource.details = "Parent PID: 500";
+        lineageSource.pid = 1000;
+        lineageSource.parentPid = 500;
+        lineageSource.processName = "sample.exe";
+        lineageSource.commandLine = "\"C:\\Path\\sample.exe\" --arg";
+        lineageSource.role = ProcessRole::Target;
+
+        const std::string binary = Protocol::SerializeEvent(lineageSource);
+        TraceEvent decoded;
+        const bool ok = Protocol::DeserializeEvent(binary, decoded);
+        Check(ok, "Modern binary payload with lineage fields deserializes successfully");
+        Check(ok && decoded.pid == 1000, "PID is preserved in binary serialization");
+        Check(ok && decoded.parentPid == 500, "Parent PID is preserved in binary serialization");
+        Check(ok && decoded.processName == "sample.exe", "Process name is preserved");
+        Check(ok && decoded.commandLine == "\"C:\\Path\\sample.exe\" --arg", "Command line is preserved");
+        Check(ok && decoded.role == ProcessRole::Target, "ProcessRole is preserved in binary serialization");
+    }
 
     closesocket(client);
     server.Stop();
