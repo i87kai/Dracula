@@ -6,7 +6,7 @@
 // The terminal is divided into fixed regions recomputed from the live terminal
 // size and repainted from retained state. Top to bottom:
 //
-//   HeaderRegion   the Dracula bat mark + identity, closed by a divider
+//   HeaderRegion   the Dracula artwork + identity, closed by a divider
 //   OutputRegion   a scrollable viewport over the session's output history
 //   PaletteRegion  transient rows reserved above the input while the palette
 //                  is open; never written into the output history

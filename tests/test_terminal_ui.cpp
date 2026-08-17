@@ -181,26 +181,66 @@ static void TestColumns() {
     Check(leftAligned, "RenderColumns never exceeds the sum of column widths plus gap");
 }
 
-// ─── 3. The Dracula bat mark ────────────────────────────────────────────────
+// ─── 3. The supplied vampire artwork ────────────────────────────────────────
 
-static void TestBatArt() {
-    Section("Layout 5: the Dracula bat mark");
+// The authoritative artwork asset, read straight from disk so the test fails if
+// the embedded copy ever drifts from the project file.
+static std::vector<std::string> ReadArtworkAsset() {
+    std::vector<std::string> rows;
+    const std::string name = "Vampire Dracula ASCII Art.txt";
 
-    const auto& art = Art::Bat();
-    Check(art.size() == 3, "The bat mark is three rows tall - it never dominates the screen");
-    Check(Art::MaxWidth(art) == 15, "The bat mark measures 15 display cells wide");
+    std::string path = Paths::ResolveResource(name);
+    if (path.empty()) return rows;
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) return rows;
+
+    std::string line;
+    while (std::getline(file, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+        if (!line.empty()) rows.push_back(line);
+    }
+    return rows;
+}
+
+static void TestVampireArt() {
+    Section("Layout 5: the supplied vampire artwork");
+
+    const auto& art = Art::Vampire();
+    const auto asset = ReadArtworkAsset();
+
+    Check(!asset.empty(), "The artwork asset is locatable without an absolute path");
+    Check(art.size() == asset.size(),
+          "The embedded artwork has the same row count as the asset file");
+
+    // Every row of the embedded artwork must be the asset's row, byte for byte,
+    // ignoring only the uniform-width padding the layout engine needs.
+    bool bytesMatch = art.size() == asset.size();
+    for (size_t i = 0; i < art.size() && i < asset.size() && bytesMatch; ++i) {
+        if (art[i].compare(0, asset[i].size(), asset[i]) != 0) bytesMatch = false;
+    }
+    Check(bytesMatch, "Every embedded row reproduces the asset row byte for byte");
+
+    const size_t width = Art::MaxWidth(art);
+    Check(width == 21, "The artwork measures 21 display cells wide");
 
     bool uniform = true;
     for (const auto& row : art) {
-        if (Text::VisibleWidth(row) != 15) uniform = false;
+        if (Text::VisibleWidth(row) != width) uniform = false;
     }
-    Check(uniform, "Every bat row is exactly 15 cells (no ragged edge)");
+    Check(uniform, "Every artwork row has the same cell width (no ragged edge)");
 
-    bool pureAscii = true;
+    // Braille (U+28xx) is single-width; if the measurement table ever changed,
+    // the two-column header would silently misalign.
+    bool allBraille = true;
     for (const auto& row : art) {
-        for (unsigned char c : row) if (c > 126 || c < 32) pureAscii = false;
+        for (size_t i = 0; i < row.size();) {
+            const uint32_t cp = Text::DecodeUtf8(row, i);
+            if (cp < 0x2800 || cp > 0x28FF) allBraille = false;
+            if (Text::CodePointWidth(cp) != 1) allBraille = false;
+        }
     }
-    Check(pureAscii, "The bat mark is pure ASCII, so --no-unicode renders it unchanged");
+    Check(allBraille, "The artwork is Braille throughout and measures one cell per glyph");
 
     auto colored = Art::Colorize(art);
     bool widthsPreserved = colored.size() == art.size();
@@ -229,12 +269,21 @@ static void TestHeaderVariantSelection() {
     Check(StartupCard::SelectVariant(80) == HeaderVariant::Standard, "80 columns uses the standard header");
     Check(StartupCard::SelectVariant(200) == HeaderVariant::Standard, "200 columns uses the same standard header");
 
-    // The bat mark is ASCII, so the header never has to change shape just
-    // because the terminal cannot render Unicode.
+    // The artwork is Braille, so a terminal without Unicode support gets the
+    // text-only header rather than a field of replacement glyphs.
     Terminal::SetUnicodeEnabled(false);
-    Check(StartupCard::SelectVariant(120) == HeaderVariant::Standard,
-          "Without Unicode support a wide terminal still uses the standard header");
+    Check(StartupCard::SelectVariant(120) == HeaderVariant::Compact,
+          "Without Unicode support even a wide terminal uses the text-only header");
+    Check(StartupCard::SelectVariant(24) == HeaderVariant::Minimal,
+          "Without Unicode support a narrow terminal still falls back to minimal");
+    bool noArtLeaks = true;
+    for (const auto& row : StartupCard::RenderHeader(120, HeaderVariant::Standard,
+                                                     StartupInfo::Detect())) {
+        if (row.find(Art::Vampire()[0].substr(0, 3)) != std::string::npos) noArtLeaks = false;
+    }
     Terminal::SetUnicodeEnabled(true);
+    Check(noArtLeaks,
+          "Requesting the standard header without Unicode support emits no Braille");
 }
 
 static void TestHeaderGeometry() {
@@ -259,7 +308,9 @@ static void TestHeaderGeometry() {
 
         // Height depends only on the variant, never on the content.
         const size_t expected =
-            StartupCard::SelectVariant(width) == HeaderVariant::Standard ? 5 : 4;
+            StartupCard::SelectVariant(width) == HeaderVariant::Standard
+                ? Art::Vampire().size() + 2   // leading blank + artwork + divider
+                : 4;
         if (header.size() != expected) heightsFixed = false;
 
         for (const auto& row : StartupCard::Render(width, info)) {
@@ -275,13 +326,17 @@ static void TestHeaderGeometry() {
     Check(dividerFullBleed, "The header divider spans the full usable width at every tested width");
     Check(heightsFixed, "Header height is a function of the variant alone");
 
-    // The bat is present, unmodified, in the standard header.
+    // Every artwork row is present, unmodified, in the standard header.
     auto wide = StartupCard::RenderHeader(160, info);
-    bool batIntact = false;
-    for (const auto& row : wide) {
-        if (row.find(Art::Bat()[1]) != std::string::npos) batIntact = true;
+    bool artIntact = true;
+    for (const auto& artRow : Art::Vampire()) {
+        bool found = false;
+        for (const auto& row : wide) {
+            if (row.find(artRow) != std::string::npos) found = true;
+        }
+        if (!found) artIntact = false;
     }
-    Check(batIntact, "The bat mark appears unmodified in the standard header");
+    Check(artIntact, "Every artwork row appears unmodified in the standard header");
 
     // Same header, same height, in a narrow window and a wide one.
     Check(StartupCard::RenderHeader(80, info).size() ==
@@ -750,12 +805,13 @@ static void TestHeightResponsiveHeader() {
     }
     Check(sameEverywhere,
           "From 20 to 80 rows the header is the same standard bat header of the same height");
-    Check(headerRows == 5, "The standard header claims exactly five rows");
+    Check(headerRows == static_cast<int>(Art::Vampire().size()) + 2,
+          "The standard header claims the artwork rows plus a blank and a divider");
 
     const auto tall = ScreenModel::Compute(120, 50, 0, info);
     Check(tall.output.height >= ScreenModel::kPreferredOutputRows,
           "A tall terminal gives the output its preferred height");
-    Check(tall.output.height > tall.header.height * 3,
+    Check(tall.output.height > tall.header.height * 2,
           "In fullscreen the output region, not the header, dominates the screen");
 
     // A normal, non-maximized window must still show useful output.
@@ -877,8 +933,14 @@ static void TestPaintedFrameStructure() {
 
         // Header: blank row, three bat rows, divider.
         if (L.headerVariant != HeaderVariant::Standard) structureHolds = false;
-        if (Text::StripAnsi(frame[1]).find("/\\") == std::string::npos) structureHolds = false;
-        if (Text::StripAnsi(frame[1]).find("Dracula") == std::string::npos) structureHolds = false;
+        if (frame[1].find(Art::Vampire()[0]) == std::string::npos) structureHolds = false;
+        bool identityInHeader = false;
+        for (int r = 0; r < L.header.height; ++r) {
+            if (Text::StripAnsi(frame[r]).find("Dracula") != std::string::npos) {
+                identityInHeader = true;
+            }
+        }
+        if (!identityInHeader) structureHolds = false;
 
         // Two dividers, identical width, one closing the header and one above
         // the prompt: that is the structural separation the layout promises.
@@ -897,7 +959,7 @@ static void TestPaintedFrameStructure() {
         if (Text::StripAnsi(frame[L.output.top]).find("output line") ==
             std::string::npos) structureHolds = false;
 
-        if (L.output.height < L.header.height * 2) outputDominates = false;
+        if (L.output.height <= L.header.height) outputDominates = false;
 
         for (const auto& row : frame) {
             if (Text::VisibleWidth(row) >= static_cast<size_t>(w)) {
@@ -909,19 +971,30 @@ static void TestPaintedFrameStructure() {
     Check(structureHolds, "Header, output, prompt strip and footer are painted where the model says");
     Check(dividersAligned, "Both dividers span exactly the usable width, at every geometry");
     Check(nothingReachesLastColumn, "No painted row reaches the terminal's final column");
-    Check(outputDominates, "The output region is at least twice the header in every geometry");
+    Check(outputDominates, "The output region outweighs the header in every geometry");
 
     // Windowed and fullscreen paint the same chrome: same header rows, same
     // divider positions relative to the bottom, same footer.
     auto [windowed, wl] = describe(120, 30);
     auto [full, fl] = describe(120, 60);
     bool sameChrome = true;
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < wl.header.height; ++i) {
         if (windowed[i] != full[i]) sameChrome = false;
     }
     if (windowed[wl.inputRule.top] != full[fl.inputRule.top]) sameChrome = false;
     if (windowed[wl.input.top] != full[fl.input.top]) sameChrome = false;
     Check(sameChrome, "A 30-row window and a 60-row fullscreen paint byte-identical chrome");
+
+    // The artwork specifically: every row present, in the same place, in a
+    // windowed terminal and in a fullscreen one.
+    bool artInBoth = true;
+    for (size_t i = 0; i < Art::Vampire().size(); ++i) {
+        const std::string& artRow = Art::Vampire()[i];
+        if (windowed[i + 1].find(artRow) == std::string::npos) artInBoth = false;
+        if (full[i + 1].find(artRow) == std::string::npos) artInBoth = false;
+    }
+    Check(artInBoth,
+          "Every artwork row is painted on the same screen row, windowed and fullscreen");
 }
 
 // ─── 9. Output buffer scrolling ─────────────────────────────────────────────
@@ -1124,7 +1197,7 @@ int main() {
     TestComposition();
     TestBoxGeometry();
     TestColumns();
-    TestBatArt();
+    TestVampireArt();
     TestHeaderVariantSelection();
     TestHeaderGeometry();
     TestPaletteStateMachine();

@@ -105,8 +105,12 @@ namespace Dracula {
     }
 
     HeaderVariant StartupCard::SelectVariant(int terminalWidth) {
-        if (terminalWidth >= kStandardMinWidth) return HeaderVariant::Standard;
-        if (terminalWidth >= kCompactMinWidth)  return HeaderVariant::Compact;
+        // The artwork is Braille, so a terminal that cannot render Unicode gets
+        // the text-only header rather than a field of replacement glyphs.
+        const bool canDrawArt = Terminal::SupportsUnicode();
+
+        if (terminalWidth >= kStandardMinWidth && canDrawArt) return HeaderVariant::Standard;
+        if (terminalWidth >= kCompactMinWidth)                return HeaderVariant::Compact;
         return HeaderVariant::Minimal;
     }
 
@@ -125,11 +129,13 @@ namespace Dracula {
 
         // A narrow terminal cannot fit the art column plus a legible text
         // column, so it renders the text-only variant regardless of the request.
-        const size_t artWidth = Art::MaxWidth(Art::Bat());
+        // The same applies when the terminal cannot draw the Braille artwork.
+        const size_t artWidth = Art::MaxWidth(Art::Vampire());
         const size_t textWidth = usable > kIndent + artWidth + kColumnGap + 16
                                ? usable - kIndent - artWidth - kColumnGap
                                : 0;
-        if (variant == HeaderVariant::Standard && textWidth == 0) {
+        if (variant == HeaderVariant::Standard &&
+            (textWidth == 0 || !Terminal::SupportsUnicode())) {
             variant = HeaderVariant::Compact;
         }
 
@@ -141,7 +147,14 @@ namespace Dracula {
                     Muted() + ShortenPath(info.workingDirectory, textWidth) + Reset()
                 };
 
-                auto art = Art::Colorize(Art::Bat());
+                auto art = Art::Colorize(Art::Vampire());
+
+                // Centre the shorter information column against the artwork, so
+                // the text sits beside the vampire rather than at its shoulder.
+                if (text.size() < art.size()) {
+                    text.insert(text.begin(), (art.size() - text.size()) / 2, "");
+                }
+
                 rows.push_back("");
                 for (const auto& row : Text::RenderColumns({art, text},
                                                            {artWidth, textWidth},

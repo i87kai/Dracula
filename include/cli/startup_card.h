@@ -4,10 +4,13 @@
 // The Dracula identity header.
 //
 // There is one header design, not a splash screen plus a shrunken imitation of
-// it: the bat mark on the left, the identity / engines / working directory on
-// the right, closed by a horizontal divider. A windowed terminal and a
+// it: the vampire artwork on the left, the identity / engines / working
+// directory beside it, closed by a horizontal divider. A windowed terminal and a
 // fullscreen terminal therefore show the same structure; only the size of the
 // output region below it changes.
+//
+// The artwork itself comes from the project asset "Vampire Dracula ASCII
+// Art.txt" via Art::Vampire(); see cli/ascii_art.h.
 //
 // Rendering is a pure function of (terminal width, environment info) so it can
 // be unit tested at any width without a real console attached. Every row is
@@ -38,7 +41,7 @@ namespace Dracula {
     // design; the narrower variants exist only so a genuinely cramped terminal
     // still carries the Dracula identity instead of dropping it.
     enum class HeaderVariant {
-        Standard,   // blank + bat mark beside identity/engines/cwd + divider (5 rows)
+        Standard,   // blank + artwork beside identity/engines/cwd + divider
         Compact,    // blank + identity + engines + divider (4 rows)
         Minimal,    // identity + divider (2 rows)
         None        // no header at all (extremely short terminals)
@@ -51,8 +54,9 @@ namespace Dracula {
         static constexpr int kStandardMinWidth = 44;
         static constexpr int kCompactMinWidth  = 30;
 
-        // The richest variant the given WIDTH can carry. The screen model then
-        // degrades further if the terminal is too short.
+        // The richest variant the given WIDTH can carry, taking Unicode support
+        // into account (the artwork is Braille). The screen model then degrades
+        // further if the terminal is too short.
         static HeaderVariant SelectVariant(int terminalWidth);
 
         // The persistent header, including its own left padding and its closing

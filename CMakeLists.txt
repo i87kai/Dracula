@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.0.3 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.0.4 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-17")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
@@ -12,6 +12,15 @@ configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/common/version.h.in
     ${CMAKE_CURRENT_BINARY_DIR}/generated/common/version.h
     @ONLY
+)
+
+# ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA ARTWORK ─────────────────────────
+# The .txt below is the editable asset; it is embedded into the executable at
+# build time, so a released binary never reads it from disk.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedArt.cmake)
+dracula_embed_art(
+    "${CMAKE_CURRENT_SOURCE_DIR}/Vampire Dracula ASCII Art.txt"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/cli/dracula_art_data.h"
 )
 
 set(CMAKE_CXX_STANDARD 20)

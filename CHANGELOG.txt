@@ -1,4 +1,36 @@
 ============================================================
+Dracula v1.0.4
+Release: 2026-08-17
+============================================================
+
+Added
+-----
+- cmake/EmbedArt.cmake and dracula_embed_art(): the project asset "Vampire Dracula ASCII Art.txt" is read at configure time and compiled into the executable as a generated header (generated/cli/dracula_art_data.h) holding every byte as an explicit \xNN escape.
+- The generated header is rewritten only when the artwork actually changes, and CMAKE_CONFIGURE_DEPENDS re-runs the embed step whenever the .txt is edited, so the asset and the binary cannot drift apart.
+- Layout checks that read the .txt asset directly and compare it against the embedded copy row by row, byte for byte, plus a check that every artwork glyph is Braille and measures exactly one display cell.
+- A check that every artwork row is painted on the same screen row in a windowed terminal and in a fullscreen one.
+
+Changed
+-------
+- The Dracula artwork is now the supplied vampire art: 7 rows x 21 display cells, taken verbatim from "Vampire Dracula ASCII Art.txt", which is the authoritative source. The compact ASCII bat mark it replaces is gone; there is still exactly one piece of artwork in the product.
+- Art::Bat() is replaced by Art::Vampire(), which builds its rows from the embedded asset and pads them to a uniform width with Braille blanks (U+2800) so the two-column header stays rectangular.
+- The standard header is now the artwork rows plus a leading blank and its closing divider (9 rows), and the identity / engines / working-directory column is vertically centred against the artwork.
+- StartupCard::SelectVariant reports the text-only Compact header when the terminal cannot render Unicode, and RenderHeader enforces the same rule, because the artwork is Braille rather than ASCII.
+
+Fixed
+-----
+- The region model, dividers, prompt strip, footer, palette and scrolling are unchanged; only the artwork and the header height it implies differ.
+
+Verified
+--------
+- Clean Release build (GCC, MinGW Makefiles, -O3) with no warnings or errors.
+- 183 terminal UI checks pass, 111 analysis-core checks pass, test_emulate_buffer passes, CTest 3/3.
+- All 7 artwork rows are present byte-for-byte inside Dracula.exe, and the executable contains no reference to the asset's filename or path: there is no runtime file dependency.
+- Editing the .txt re-triggers the embed step on the next build.
+- Rendered frames verified at 44x24, 50x24, 80x24, 120x18, 120x30, 160x50, 200x55 and 240x67: the artwork is byte-identical to the asset, every row aligns, ANSI colouring does not shift a single cell, and the header falls back to text only below 44 columns, below 20 rows, or without Unicode support.
+- Real Dracula.exe runs windowed and through fullscreen toggles in a live console without crashing or corrupting the layout; --version, --entropy, --headers, the redirected streaming REPL and --mcp stay free of artwork and ANSI chrome.
+
+============================================================
 Dracula v1.0.3
 Release: 2026-08-17
 ============================================================
