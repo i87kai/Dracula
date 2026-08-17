@@ -22,6 +22,10 @@ namespace Art {
     // A small ASCII-only vampire mark for narrow terminals.
     const std::vector<std::string>& VampireCompact();
 
+    // A two-row vampire mark for short terminals, where the full artwork
+    // cannot be shown without starving the output viewport.
+    const std::vector<std::string>& VampireMini();
+
     // Maximum visible width of an art block, in display cells.
     size_t MaxWidth(const std::vector<std::string>& art);
 

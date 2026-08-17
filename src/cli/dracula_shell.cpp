@@ -287,40 +287,66 @@ namespace Dracula {
         return line;
     }
 
+    void DraculaShell::RunCommandLine(const std::string& line) {
+        try {
+            ExecuteCommand(line);
+        } catch (const std::exception& ex) {
+            Ui::Error(std::string("Command failed: ") + ex.what());
+        } catch (...) {
+            Ui::Error("Command failed with an unknown error.");
+        }
+    }
+
     int DraculaShell::RunInteractive() {
-        PrintBanner();
         m_running = true;
 
-        std::string lastStatus;
+        // Persistent three-region layout: the Dracula header stays put, command
+        // output scrolls inside its own viewport, the prompt is anchored to the
+        // bottom row. Falls back to plain streaming when there is no console.
+        InteractiveScreen screen;
+        if (screen.Begin()) {
+            m_screen = &screen;
 
-        while (m_running) {
-            // Subtle, non-repeating session status directly above the prompt.
-            std::string status = SessionStatusLine();
-            if (!status.empty() && status != lastStatus) {
-                std::cout << " " << C(ColorRole::Muted)
-                          << Text::Truncate(status, Ui::ContentWidth())
-                          << R() << "\n";
+            std::string welcome = C(ColorRole::Muted) +
+                "Ready. PageUp / PageDown scroll this output region." + R();
+            screen.Output().AppendLine("");
+            screen.Output().AppendLine(" " + welcome);
+
+            const std::string prompt = Terminal::DraculaPrompt();
+
+            while (m_running) {
+                screen.SetStatusLine(SessionStatusLine());
+
+                std::string line;
+                if (!screen.ReadCommand(m_editor, prompt, line)) {
+                    break;   // Ctrl+D on an empty line
+                }
+                if (line.empty()) continue;
+
+                // Echo the executed command into the output history so the
+                // transcript reads like a session.
+                screen.Output().AppendLine("");
+                screen.Output().AppendLine(" " + prompt + C(ColorRole::Text) + line + R());
+
+                RunCommandLine(line);
+                screen.Output().ScrollToBottom();
             }
-            lastStatus = status;
 
+            m_screen = nullptr;
+            screen.End();
+
+            std::cout << "\n " << C(ColorRole::Muted) << "Session closed." << R() << "\n\n";
+            return 0;
+        }
+
+        // ── Non-console fallback: ordinary streaming REPL ──
+        PrintCompactHeader();
+        while (m_running) {
             std::string prompt = Terminal::DraculaPrompt();
             std::string line;
-
-            if (!m_editor.ReadLine(prompt, line)) {
-                break; // EOF
-            }
-
+            if (!m_editor.ReadLine(prompt, line)) break;
             if (line.empty()) continue;
-
-            try {
-                ExecuteCommand(line);
-            } catch (const std::exception& ex) {
-                Ui::Error(std::string("Command failed: ") + ex.what());
-            } catch (...) {
-                Ui::Error("Command failed with an unknown error.");
-            }
-            // Whatever a command printed, the console returns to a known state.
-            Console::ResetStyle();
+            RunCommandLine(line);
         }
 
         Console::ResetStyle();
@@ -1093,8 +1119,14 @@ namespace Dracula {
     }
 
     void DraculaShell::HandleClear(const std::vector<std::string>& args) {
-        // Clears the viewport only. The analysis session, active sample and
-        // command history are deliberately preserved.
+        // Clears the output history and returns the viewport to the newest
+        // output. The Dracula header, the prompt, the active analysis session
+        // and the command history are all deliberately preserved.
+        if (m_screen) {
+            m_screen->Output().Clear();
+            m_screen->Invalidate();
+            return;
+        }
         Console::ClearScreen();
         PrintCompactHeader();
     }

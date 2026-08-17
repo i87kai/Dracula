@@ -5,6 +5,7 @@
 #include "cli/command_registry.h"
 #include "cli/line_editor.h"
 #include "cli/terminal.h"
+#include "cli/screen.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -21,6 +22,10 @@ namespace Dracula {
 
         // Execute a single command line (for scripted/REPL dispatch)
         bool ExecuteCommand(const std::string& commandLine);
+
+        // Execute with error containment: a throwing command reports through
+        // the semantic error UI instead of unwinding the session.
+        void RunCommandLine(const std::string& commandLine);
 
         // Process non-interactive command line arguments
         int ProcessArgs(int argc, char* argv[]);
@@ -72,6 +77,10 @@ namespace Dracula {
         std::unique_ptr<UnifiedAnalysisResult> m_sessionResult;
         std::string m_activeFile;
         LineEditor m_editor;
+
+        // Non-owning: set while the persistent layout is driving the session.
+        InteractiveScreen* m_screen = nullptr;
+
         bool m_running = true;
     };
 

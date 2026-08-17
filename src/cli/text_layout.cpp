@@ -255,6 +255,52 @@ namespace Text {
         return lines;
     }
 
+    std::vector<std::string> WrapCells(const std::string& text, size_t width) {
+        std::vector<std::string> rows;
+        if (width == 0) { rows.push_back(""); return rows; }
+        if (VisibleWidth(text) <= width) { rows.push_back(text); return rows; }
+
+        const std::string reset = Terminal::Color(ColorRole::Reset);
+
+        std::string style;      // SGR state active at the current position
+        std::string row;
+        size_t used = 0;
+
+        auto flush = [&]() {
+            if (!style.empty()) row += reset;
+            rows.push_back(row);
+            row = style;        // carry the styling into the continuation row
+            used = 0;
+        };
+
+        for (size_t i = 0; i < text.size();) {
+            size_t esc = AnsiSequenceLength(text, i);
+            if (esc > 0) {
+                const std::string seq = text.substr(i, esc);
+                // A reset clears the carried style; anything else accumulates.
+                if (seq == "\033[0m" || seq == "\033[m") style.clear();
+                else style += seq;
+                row += seq;
+                i += esc;
+                continue;
+            }
+
+            size_t start = i;
+            uint32_t cp = DecodeUtf8(text, i);
+            size_t cw = static_cast<size_t>(CodePointWidth(cp));
+            if (used + cw > width) flush();
+
+            row.append(text, start, i - start);
+            used += cw;
+        }
+
+        if (!row.empty() || rows.empty()) {
+            if (!style.empty()) row += reset;
+            rows.push_back(row);
+        }
+        return rows;
+    }
+
     std::string HorizontalRule(size_t width) {
         return Repeat(Terminal::BoxH(), width);
     }

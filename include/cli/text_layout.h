@@ -55,6 +55,12 @@ namespace Text {
     // Greedy word wrap on display width. Never returns an empty vector.
     std::vector<std::string> Wrap(const std::string& text, size_t width);
 
+    // Hard wrap on display cells, preserving ANSI styling across the split:
+    // each continuation row re-emits the styling that was active when the row
+    // began. Used to render stored logical output for the current viewport
+    // width without losing any content.
+    std::vector<std::string> WrapCells(const std::string& text, size_t width);
+
     // ─── Frames ─────────────────────────────────────────────────────────────
 
     // A horizontal rule of `width` display cells built from the active box

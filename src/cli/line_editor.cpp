@@ -276,11 +276,12 @@ namespace Dracula {
         ClearSuggestions();
     }
 
-    size_t LineEditor::ViewportOffset() const {
-        if (m_suggestions.size() <= kViewportRows) return 0;
-        if (m_selection < kViewportRows) return 0;
-        size_t offset = m_selection - kViewportRows + 1;
-        size_t maxOffset = m_suggestions.size() - kViewportRows;
+    size_t LineEditor::ViewportOffset(size_t visibleRows) const {
+        if (visibleRows == 0) visibleRows = 1;
+        if (m_suggestions.size() <= visibleRows) return 0;
+        if (m_selection < visibleRows) return 0;
+        size_t offset = m_selection - visibleRows + 1;
+        size_t maxOffset = m_suggestions.size() - visibleRows;
         return std::min(offset, maxOffset);
     }
 
@@ -487,13 +488,15 @@ namespace Dracula {
 
     // ─── Popup rendering ────────────────────────────────────────────────────
 
-    std::vector<std::string> LineEditor::BuildPopupRows(size_t width) const {
+    std::vector<std::string> LineEditor::BuildPopupRows(size_t width,
+                                                        size_t visibleRows) const {
         std::vector<std::string> rows;
         if (m_suggestions.empty()) return rows;
+        if (visibleRows == 0) visibleRows = 1;
 
         const size_t total = m_suggestions.size();
-        const size_t offset = ViewportOffset();
-        const size_t count = std::min(kViewportRows, total - offset);
+        const size_t offset = ViewportOffset(visibleRows);
+        const size_t count = std::min(visibleRows, total - offset);
 
         size_t labelWidth = 0;
         for (size_t i = 0; i < count; ++i) {
@@ -536,6 +539,14 @@ namespace Dracula {
                              (m_kind == SuggestionKind::Command ? "commands"
                               : m_kind == SuggestionKind::Path ? "paths" : "values");
 
+        // When the list is taller than the rows we were given, say so: the
+        // palette shrinks on short terminals and still scrolls.
+        if (total > count) {
+            footer += "   " + Terminal::Bullet() + "   " +
+                      (Terminal::SupportsUnicode() ? "\xE2\x86\x91\xE2\x86\x93 browse"
+                                                   : "Up/Down browse");
+        }
+
         if (m_kind == SuggestionKind::Command && m_selection < m_filteredCommands.size()) {
             footer += "   " + Terminal::Bullet() + "   " + m_filteredCommands[m_selection]->usage;
         }
@@ -545,139 +556,120 @@ namespace Dracula {
         return rows;
     }
 
-    void LineEditor::ErasePopup() {
-        if (m_renderedRows == 0) return;
-        for (size_t i = 0; i < m_renderedRows; ++i) {
-            std::cout << "\n";
-            Console::ClearLine();
-        }
-        Console::MoveUp(static_cast<int>(m_renderedRows));
-        m_renderedRows = 0;
-    }
 
-    void LineEditor::Redraw(const std::string& prompt) {
-        CursorGuard cursorGuard;
+    // ─── Input slice ────────────────────────────────────────────────────────
 
-        ErasePopup();
-
-        const size_t termWidth = static_cast<size_t>(std::max(Terminal::GetWidth(), 20));
-        const size_t promptWidth = Text::VisibleWidth(prompt);
-        const size_t available = termWidth > promptWidth + 1 ? termWidth - promptWidth - 1 : 10;
+    std::string LineEditor::VisibleInput(size_t available, size_t& cursorOffset) const {
+        if (available == 0) available = 1;
 
         // Horizontal scrolling keeps the input on a single physical row, which
-        // is what makes in-place popup redrawing reliable.
-        if (m_cursorPos < m_scrollOffset) {
-            m_scrollOffset = m_cursorPos;
-        }
-        if (m_cursorPos - m_scrollOffset > available) {
-            m_scrollOffset = m_cursorPos - available;
-        }
+        // is what makes the fixed input region reliable.
         if (m_buffer.size() <= available) {
             m_scrollOffset = 0;
+        } else {
+            if (m_cursorPos < m_scrollOffset) {
+                m_scrollOffset = m_cursorPos;
+            }
+            if (m_cursorPos - m_scrollOffset > available) {
+                m_scrollOffset = m_cursorPos - available;
+            }
+            if (m_scrollOffset > m_buffer.size()) m_scrollOffset = m_buffer.size();
         }
 
         std::string visible = m_buffer.substr(std::min(m_scrollOffset, m_buffer.size()));
         if (visible.size() > available) visible = visible.substr(0, available);
 
-        Console::CarriageReturn();
-        Console::ClearLine();
-        std::cout << prompt << C(ColorRole::Text) << visible << R();
-
-        // Popup beneath the prompt.
-        if (!m_suggestions.empty()) {
-            auto rows = BuildPopupRows(termWidth - 1);
-            for (const auto& row : rows) {
-                std::cout << "\n";
-                Console::ClearLine();
-                std::cout << row;
-                m_renderedRows++;
-            }
-            Console::MoveUp(static_cast<int>(m_renderedRows));
-        }
-
-        Console::MoveToColumn(static_cast<int>(promptWidth + (m_cursorPos - m_scrollOffset)));
-        std::cout << std::flush;
+        cursorOffset = m_cursorPos - std::min(m_scrollOffset, m_cursorPos);
+        if (cursorOffset > available) cursorOffset = available;
+        return visible;
     }
 
-    // ─── Input loop ─────────────────────────────────────────────────────────
+    // ─── Event handling ─────────────────────────────────────────────────────
 
-    bool LineEditor::ReadLine(const std::string& prompt, std::string& outLine) {
-        ResetBuffer();
+    LineEditor::EditAction LineEditor::HandleKey(const InputEvent& event) {
+        switch (event.key) {
+            case Key::Resize:
+                return EditAction::Resize;
 
-        // Non-interactive (redirected stdin/stdout) must stay plain: no ANSI,
-        // no popups, no cursor movement.
-        if (!Terminal::IsInteractive()) {
-            std::cout << Terminal::StripAnsi(prompt) << std::flush;
-            if (!std::getline(std::cin, outLine)) return false;
-            if (!outLine.empty()) AddHistory(outLine);
-            return true;
-        }
-
-#ifdef _WIN32
-        Redraw(prompt);
-
-        while (true) {
-            wint_t ch = _getwch();
-
-            // Extended key prefix
-            if (ch == 0 || ch == 0xE0) {
-                wint_t ext = _getwch();
-                switch (ext) {
-                    case 72: // UP
-                        if (IsSuggestionActive()) {
-                            PaletteMoveUp();
-                        } else if (!m_history.empty()) {
-                            if (m_historyIndex == -1) {
-                                m_savedCurrentLine = m_buffer;
-                                m_historyIndex = static_cast<int>(m_history.size()) - 1;
-                            } else if (m_historyIndex > 0) {
-                                m_historyIndex--;
-                            }
-                            if (m_historyIndex >= 0 && m_historyIndex < static_cast<int>(m_history.size())) {
-                                m_buffer = m_history[m_historyIndex];
-                                m_cursorPos = m_buffer.size();
-                            }
-                        }
-                        break;
-
-                    case 80: // DOWN
-                        if (IsSuggestionActive()) {
-                            PaletteMoveDown();
-                        } else if (m_historyIndex != -1) {
-                            if (m_historyIndex + 1 < static_cast<int>(m_history.size())) {
-                                m_historyIndex++;
-                                m_buffer = m_history[m_historyIndex];
-                            } else {
-                                m_historyIndex = -1;
-                                m_buffer = m_savedCurrentLine;
-                            }
-                            m_cursorPos = m_buffer.size();
-                        }
-                        break;
-
-                    case 75: MoveCursorLeft();  break;
-                    case 77: MoveCursorRight(); break;
-                    case 71: MoveCursorHome();  break;
-                    case 79: MoveCursorEnd();   break;
-                    case 83: DeleteCharAtCursor(); break;
-                    default: break;
+            case Key::Up:
+                // Palette navigation wins while the popup is open; otherwise
+                // Up/Down belong to command history.
+                if (IsSuggestionActive()) {
+                    PaletteMoveUp();
+                } else if (!m_history.empty()) {
+                    if (m_historyIndex == -1) {
+                        m_savedCurrentLine = m_buffer;
+                        m_historyIndex = static_cast<int>(m_history.size()) - 1;
+                    } else if (m_historyIndex > 0) {
+                        m_historyIndex--;
+                    }
+                    if (m_historyIndex >= 0 && m_historyIndex < static_cast<int>(m_history.size())) {
+                        m_buffer = m_history[static_cast<size_t>(m_historyIndex)];
+                        m_cursorPos = m_buffer.size();
+                    }
                 }
-                Redraw(prompt);
-                continue;
-            }
+                return EditAction::Continue;
 
-            if (ch == 13 || ch == 10) { // ENTER
-                // A highlighted command is accepted rather than executed when it
-                // still needs arguments; otherwise Enter runs it.
+            case Key::Down:
+                if (IsSuggestionActive()) {
+                    PaletteMoveDown();
+                } else if (m_historyIndex != -1) {
+                    if (m_historyIndex + 1 < static_cast<int>(m_history.size())) {
+                        m_historyIndex++;
+                        m_buffer = m_history[static_cast<size_t>(m_historyIndex)];
+                    } else {
+                        m_historyIndex = -1;
+                        m_buffer = m_savedCurrentLine;
+                    }
+                    m_cursorPos = m_buffer.size();
+                }
+                return EditAction::Continue;
+
+            // Output-viewport scrolling. Deliberately never bound to Up/Down,
+            // which belong to the palette and the command history.
+            case Key::PageUp:    return EditAction::ScrollPageUp;
+            case Key::PageDown:  return EditAction::ScrollPageDown;
+            case Key::WheelUp:   return EditAction::ScrollLineUp;
+            case Key::WheelDown: return EditAction::ScrollLineDown;
+            case Key::CtrlHome:  return EditAction::ScrollTop;
+            case Key::CtrlEnd:   return EditAction::ScrollBottom;
+
+            case Key::Left:      MoveCursorLeft();      return EditAction::Continue;
+            case Key::Right:     MoveCursorRight();     return EditAction::Continue;
+            case Key::Home:
+            case Key::CtrlA:     MoveCursorHome();      return EditAction::Continue;
+            case Key::End:
+            case Key::CtrlE:     MoveCursorEnd();       return EditAction::Continue;
+            case Key::Delete:    DeleteCharAtCursor();  return EditAction::Continue;
+            case Key::Backspace: DeleteCharBeforeCursor(); return EditAction::Continue;
+            case Key::CtrlK:     ClearToEndOfLine();    return EditAction::Continue;
+            case Key::CtrlU:     ClearLine();           return EditAction::Continue;
+            case Key::CtrlL:     return EditAction::ClearScreen;
+
+            case Key::Escape:
+                // Close the popup, keep the typed input.
+                ClearSuggestions();
+                return EditAction::Continue;
+
+            case Key::Tab:
+                if (IsSuggestionActive()) {
+                    AcceptSuggestion();
+                } else {
+                    CompleteCurrentToken();
+                }
+                return EditAction::Continue;
+
+            case Key::Enter: {
                 if (m_kind == SuggestionKind::Command && !m_suggestions.empty()) {
                     const auto* cmd = m_selection < m_filteredCommands.size()
                                     ? m_filteredCommands[m_selection] : nullptr;
                     if (cmd && cmd->requiresArgs) {
+                        // The command still needs arguments: accept it into the
+                        // buffer instead of executing it.
                         m_buffer = "/" + cmd->name + " ";
                         m_cursorPos = m_buffer.size();
                         ClearSuggestions();
-                        Redraw(prompt);
-                        continue;
+                        return EditAction::Continue;
                     }
                     if (cmd) {
                         m_buffer = "/" + cmd->name;
@@ -686,97 +678,47 @@ namespace Dracula {
                     ClearSuggestions();
                 } else if (IsSuggestionActive()) {
                     AcceptSuggestion();
-                    Redraw(prompt);
-                    continue;
+                    return EditAction::Continue;
                 }
-
-                ErasePopup();
-                Console::CarriageReturn();
-                Console::ClearLine();
-                std::cout << prompt << C(ColorRole::Text) << m_buffer << R() << "\n" << std::flush;
-
-                outLine = m_buffer;
-                if (!outLine.empty()) AddHistory(outLine);
-                return true;
+                if (!m_buffer.empty()) AddHistory(m_buffer);
+                return EditAction::Submit;
             }
 
-            if (ch == 9) { // TAB
-                if (IsSuggestionActive()) {
-                    AcceptSuggestion();
-                } else {
-                    CompleteCurrentToken();
-                }
-                Redraw(prompt);
-                continue;
-            }
-
-            if (ch == 27) { // ESCAPE - close the popup, keep the input
+            case Key::CtrlC:
                 ClearSuggestions();
-                Redraw(prompt);
-                continue;
-            }
+                m_buffer.clear();
+                m_cursorPos = 0;
+                m_scrollOffset = 0;
+                m_historyIndex = -1;
+                return EditAction::Cancel;
 
-            if (ch == 8 || ch == 127) { // BACKSPACE
-                DeleteCharBeforeCursor();
-                Redraw(prompt);
-                continue;
-            }
-
-            if (ch == 3) { // Ctrl+C
-                ErasePopup();
-                ClearSuggestions();
-                std::cout << "\n" << std::flush;
-                Console::ResetStyle();
-                outLine.clear();
-                return true;
-            }
-
-            if (ch == 4) { // Ctrl+D
-                if (m_buffer.empty()) {
-                    ErasePopup();
-                    Console::ResetStyle();
-                    std::cout << "\n" << std::flush;
-                    return false;
-                }
+            case Key::CtrlD:
+                if (m_buffer.empty()) return EditAction::Eof;
                 DeleteCharAtCursor();
-                Redraw(prompt);
-                continue;
-            }
+                return EditAction::Continue;
 
-            if (ch == 1) { MoveCursorHome();  Redraw(prompt); continue; }  // Ctrl+A
-            if (ch == 5) { MoveCursorEnd();   Redraw(prompt); continue; }  // Ctrl+E
-            if (ch == 11) { ClearToEndOfLine(); Redraw(prompt); continue; } // Ctrl+K
-            if (ch == 21) { ClearLine();      Redraw(prompt); continue; }  // Ctrl+U
-            if (ch == 12) { // Ctrl+L - clear screen, keep the input
-                ErasePopup();
-                Console::ClearScreen();
-                Redraw(prompt);
-                continue;
-            }
+            case Key::Char:
+                InsertString(event.utf8);
+                return EditAction::Continue;
 
-            if (ch >= 32 && ch <= 126) {
-                InsertChar(static_cast<char>(ch));
-                Redraw(prompt);
-                continue;
-            }
-
-            if (ch > 126) {
-                char utf8[8] = {0};
-                wchar_t wide = static_cast<wchar_t>(ch);
-                int bytes = WideCharToMultiByte(CP_UTF8, 0, &wide, 1, utf8, sizeof(utf8), nullptr, nullptr);
-                if (bytes > 0) {
-                    InsertString(std::string(utf8, static_cast<size_t>(bytes)));
-                    Redraw(prompt);
-                }
-                continue;
-            }
+            case Key::None:
+            default:
+                return EditAction::Continue;
         }
-#else
+    }
+
+    // ─── Non-interactive read ───────────────────────────────────────────────
+
+    bool LineEditor::ReadLine(const std::string& prompt, std::string& outLine) {
+        ResetBuffer();
+
+        // Redirected stdin/stdout must stay plain: no ANSI, no popups, no
+        // cursor movement. The persistent screen drives HandleKey instead.
         std::cout << Terminal::StripAnsi(prompt) << std::flush;
         if (!std::getline(std::cin, outLine)) return false;
+        if (!outLine.empty() && outLine.back() == '\r') outLine.pop_back();
         if (!outLine.empty()) AddHistory(outLine);
         return true;
-#endif
     }
 
 } // namespace Dracula

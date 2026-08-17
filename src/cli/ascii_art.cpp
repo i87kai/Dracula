@@ -46,6 +46,15 @@ namespace Art {
         return kArt;
     }
 
+    // Two rows only: used when the terminal is too short for the full artwork.
+    const std::vector<std::string>& VampireMini() {
+        static const std::vector<std::string> kArt = {
+            R"( /\-----/\ )",
+            R"(( o  V  o ))",
+        };
+        return kArt;
+    }
+
     size_t MaxWidth(const std::vector<std::string>& art) {
         size_t w = 0;
         for (const auto& row : art) {

@@ -1,4 +1,47 @@
 ============================================================
+Dracula v1.0.2
+Release: 2026-08-17
+============================================================
+
+Added
+-----
+- Height-responsive persistent header. The approved Dracula card now has four variants (Full, FullNoTips, Compact, Minimal) selected from the terminal HEIGHT after the width has chosen the artwork layout, so Dracula no longer requires a maximized window.
+- Two-row ASCII vampire mark (Art::VampireMini) used by the Compact header on short terminals.
+- Mouse wheel scrolling of the output viewport, via ENABLE_MOUSE_INPUT and MOUSE_WHEELED records read from the console input queue (three lines per notch).
+- Ctrl+Home / Ctrl+End jump to the oldest / newest output.
+- Scroll position indicator in the status row ("Output 13-30 / 42", plus "PageDown to follow" while detached).
+- ANSI-aware hard wrapping (Text::WrapCells) so stored logical output is re-wrapped for the current output width instead of being truncated.
+- ScreenModel::HeaderRows and HeaderVariant, making header sizing a pure, testable function of width and height.
+- 65 additional terminal UI checks covering the width x height region matrix, height-responsive header selection, palette height adaptation, output history scrolling, scroll key mapping and resize state preservation.
+
+Changed
+-------
+- Region sizing is now a strict priority order: the input row is always visible, then the output viewport keeps its preferred height (8 rows, floor 3), then the palette fits, and only then does the header claim what is left.
+- The header variant is chosen from the terminal geometry alone and no longer changes when the command palette opens, so the header never moves or resizes while typing.
+- The command palette viewport is now sized dynamically (8 rows preferred, 3 minimum) instead of always claiming 8 rows; the list still scrolls in whatever viewport it is given and its footer says so.
+- OutputBuffer stores logical lines and renders them for the current viewport width, so a resize reflows the history rather than leaving rows sized for the previous geometry.
+- The output scroll position is a logical line anchor, so it is preserved across width and height changes.
+- Terminal input is configured explicitly for the interactive screen: mouse and window input on, quick-edit selection off, virtual-terminal input off, line/echo/processed input off.
+- Tips and the working directory are dropped from the header before any output rows are sacrificed.
+
+Fixed
+-----
+- Fixed command output being invisible unless Windows Terminal was maximized. The header claimed a fixed ~24 rows regardless of terminal height, leaving 0-4 usable output rows in an ordinary window.
+- Fixed the output viewport being unscrollable: PageUp/PageDown existed but there was no wheel support and no way to inspect history, and the viewport had no visible position.
+- Fixed the command palette consuming nearly every remaining row on short terminals, hiding all previous output.
+- Fixed unsigned underflow risk in the scroll arithmetic by clamping at the oldest line instead of wrapping around.
+- Fixed the palette causing the header to shrink and grow as suggestions appeared and disappeared.
+
+Verified
+--------
+- Clean Release build (GCC 16.1.0, Ninja/Make, -O3) with no warnings or errors.
+- 178 terminal UI checks and 112 analysis-core audit checks pass; test_emulate_buffer passes; CTest 3/3.
+- Real non-fullscreen Windows Terminal runs at 80x24, 100x15, 100x18, 100x20, 100x25, 120x30 and 100x40: header, output and prompt all visible at every size.
+- Real mouse wheel events injected into the console input queue scroll the output region while the header and prompt stay fixed, with the position indicator tracking and auto-follow resuming at the bottom.
+- Live resize (XTWINOPS) from 120x45 to 90x22 and back: header degrades Full -> Compact -> Full automatically, typed input and scroll position preserved.
+- MCP stdout remains pure JSON-RPC; redirected CLI output contains no ANSI escape sequences.
+
+============================================================
 Dracula v1.0.1
 Release: 2026-08-17
 ============================================================

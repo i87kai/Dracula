@@ -133,6 +133,19 @@ namespace Dracula {
         s_unicodeEnabled = enabled;
     }
 
+    static int s_contentWidthOverride = 0;
+
+    void Terminal::SetContentWidth(int width) {
+        s_contentWidthOverride = width > 0 ? width : 0;
+    }
+
+    int Terminal::ContentWidth() {
+        if (s_contentWidthOverride > 0) return s_contentWidthOverride;
+        int w = GetWidth();
+        if (w < 20) w = 20;
+        return std::min(w - 2, 118);
+    }
+
     int Terminal::GetWidth() {
         // Redirected output has no window to measure. Reporting a generous
         // fixed width keeps piped/redirected reports from being truncated to an
@@ -352,9 +365,169 @@ namespace Dracula {
         std::cout << "\033[" << (zeroBasedColumn + 1) << "G";
     }
 
+    void Console::MoveTo(int row, int column) {
+        if (!Terminal::IsInteractive()) return;
+        if (row < 0) row = 0;
+        if (column < 0) column = 0;
+        std::cout << "\033[" << (row + 1) << ";" << (column + 1) << "H";
+    }
+
     void Console::ResetStyle() {
         if (!Terminal::IsInteractive()) return;
         std::cout << "\033[0m\033[?25h" << std::flush;
+    }
+
+    // ─── Alternate screen ───────────────────────────────────────────────────
+
+    static bool s_inAlternateScreen = false;
+
+    bool Console::EnterAlternateScreen() {
+        if (s_inAlternateScreen) return true;
+        if (!Terminal::IsInteractive() || !Terminal::SupportsColor()) return false;
+        // 1049 saves the cursor, switches buffer and clears it in one sequence.
+        std::cout << "\033[?1049h\033[H\033[2J" << std::flush;
+        s_inAlternateScreen = true;
+        return true;
+    }
+
+    void Console::LeaveAlternateScreen() {
+        if (!s_inAlternateScreen) return;
+        std::cout << "\033[0m\033[?25h\033[?1049l" << std::flush;
+        s_inAlternateScreen = false;
+    }
+
+    bool Console::InAlternateScreen() {
+        return s_inAlternateScreen;
+    }
+
+    // ─── Normalized input ───────────────────────────────────────────────────
+
+#ifdef _WIN32
+    static bool MapKeyEvent(const KEY_EVENT_RECORD& key, InputEvent& out) {
+        if (!key.bKeyDown) return false;
+
+        const bool ctrl = (key.dwControlKeyState &
+                           (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+
+        switch (key.wVirtualKeyCode) {
+            case VK_RETURN: out.key = Key::Enter;     return true;
+            case VK_TAB:    out.key = Key::Tab;       return true;
+            case VK_ESCAPE: out.key = Key::Escape;    return true;
+            case VK_BACK:   out.key = Key::Backspace; return true;
+            case VK_DELETE: out.key = Key::Delete;    return true;
+            case VK_LEFT:   out.key = Key::Left;      return true;
+            case VK_RIGHT:  out.key = Key::Right;     return true;
+            case VK_UP:     out.key = Key::Up;        return true;
+            case VK_DOWN:   out.key = Key::Down;      return true;
+            case VK_HOME:   out.key = ctrl ? Key::CtrlHome : Key::Home; return true;
+            case VK_END:    out.key = ctrl ? Key::CtrlEnd  : Key::End;  return true;
+            case VK_PRIOR:  out.key = Key::PageUp;    return true;
+            case VK_NEXT:   out.key = Key::PageDown;  return true;
+            case VK_SHIFT:
+            case VK_CONTROL:
+            case VK_MENU:
+            case VK_CAPITAL:
+            case VK_NUMLOCK:
+            case VK_SCROLL:
+                return false;
+            default:
+                break;
+        }
+
+        wchar_t ch = key.uChar.UnicodeChar;
+        if (ch == 0) return false;
+
+        if (ctrl && ch < 32) {
+            switch (ch) {
+                case 1:  out.key = Key::CtrlA; return true;
+                case 3:  out.key = Key::CtrlC; return true;
+                case 4:  out.key = Key::CtrlD; return true;
+                case 5:  out.key = Key::CtrlE; return true;
+                case 11: out.key = Key::CtrlK; return true;
+                case 12: out.key = Key::CtrlL; return true;
+                case 21: out.key = Key::CtrlU; return true;
+                default: return false;
+            }
+        }
+        if (ch < 32) return false;
+
+        char utf8[8] = {0};
+        int bytes = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, utf8, sizeof(utf8), nullptr, nullptr);
+        if (bytes <= 0) return false;
+
+        out.key = Key::Char;
+        out.utf8.assign(utf8, static_cast<size_t>(bytes));
+        return true;
+    }
+#endif
+
+    void Console::EnableInteractiveInput(bool enable) {
+#ifdef _WIN32
+        HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+        if (hIn == INVALID_HANDLE_VALUE) return;
+
+        DWORD mode = 0;
+        if (!GetConsoleMode(hIn, &mode)) return;
+
+        if (enable) {
+            // ENABLE_EXTENDED_FLAGS is required for ENABLE_QUICK_EDIT_MODE to be
+            // honoured at all; quick-edit must be off or a wheel/drag turns into
+            // a text selection instead of an input event.
+            mode |= ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT;
+            mode &= ~static_cast<DWORD>(ENABLE_QUICK_EDIT_MODE);
+            // VT input would deliver escape sequences (and focus reports) into
+            // the key stream; the event reader wants raw key records.
+            mode &= ~static_cast<DWORD>(ENABLE_VIRTUAL_TERMINAL_INPUT);
+            mode &= ~static_cast<DWORD>(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+        } else {
+            mode &= ~static_cast<DWORD>(ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT);
+            mode |= ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
+        }
+        SetConsoleMode(hIn, mode);
+#else
+        (void)enable;
+#endif
+    }
+
+    bool Console::ReadInput(InputEvent& out) {
+#ifdef _WIN32
+        HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+        if (hIn == INVALID_HANDLE_VALUE) return false;
+
+        INPUT_RECORD record{};
+        DWORD read = 0;
+        while (true) {
+            if (!ReadConsoleInputW(hIn, &record, 1, &read) || read == 0) {
+                return false;
+            }
+            if (record.EventType == WINDOW_BUFFER_SIZE_EVENT) {
+                out = InputEvent{};
+                out.key = Key::Resize;
+                return true;
+            }
+            if (record.EventType == KEY_EVENT) {
+                out = InputEvent{};
+                if (MapKeyEvent(record.Event.KeyEvent, out)) return true;
+                continue;
+            }
+            if (record.EventType == MOUSE_EVENT) {
+                const auto& mouse = record.Event.MouseEvent;
+                if (mouse.dwEventFlags == MOUSE_WHEELED) {
+                    // The high word of dwButtonState is a signed wheel delta;
+                    // positive means the wheel rotated away from the user.
+                    const short delta = static_cast<short>(HIWORD(mouse.dwButtonState));
+                    out = InputEvent{};
+                    out.key = delta > 0 ? Key::WheelUp : Key::WheelDown;
+                    return true;
+                }
+                continue;
+            }
+            // Focus and menu events are intentionally ignored.
+        }
+#else
+        (void)out;
+        return false;
+#endif
     }
 
 } // namespace Dracula

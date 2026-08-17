@@ -16,10 +16,9 @@ namespace Ui {
     }
 
     size_t ContentWidth() {
-        int w = Terminal::GetWidth();
-        if (w < 20) w = 20;
-        // Keep prose readable on ultra-wide terminals.
-        return static_cast<size_t>(std::min(w - 2, 118));
+        // Terminal owns the answer: in the persistent interactive layout it is
+        // the output region's width, otherwise the console width.
+        return static_cast<size_t>(Terminal::ContentWidth());
     }
 
     void Blank() {

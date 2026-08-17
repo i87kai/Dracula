@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.0.1 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.0.2 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-17")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
@@ -75,6 +75,7 @@ set(DRACULA_CORE_SOURCES
     src/cli/ui.cpp
     src/cli/ascii_art.cpp
     src/cli/startup_card.cpp
+    src/cli/screen.cpp
     src/cli/command_registry.cpp
     src/cli/line_editor.cpp
     src/cli/dracula_shell.cpp

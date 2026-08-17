@@ -14,6 +14,7 @@
 #include "cli/command_registry.h"
 #include "cli/line_editor.h"
 #include "cli/dracula_shell.h"
+#include "cli/screen.h"
 #include "common/version.h"
 #include "common/paths.h"
 
@@ -680,6 +681,345 @@ static void TestResourceResolution() {
           "CHANGELOG.txt is located without depending on the working directory");
 }
 
+// ─── 8. Persistent screen regions ───────────────────────────────────────────
+
+static const int kTestHeights[] = {15, 18, 20, 24, 25, 30, 40, 50, 60, 80};
+
+static void TestScreenRegionMatrix() {
+    Section("Screen 1: region geometry across the width x height matrix");
+
+    StartupInfo info = StartupInfo::Detect();
+
+    bool promptAlwaysVisible = true;
+    bool noNegative = true;
+    bool noOverlap = true;
+    bool outputUsable = true;
+    bool paletteFits = true;
+    bool headerInsideScreen = true;
+
+    for (int w : {60, 80, 100, 120, 160}) {
+        for (int h : kTestHeights) {
+            for (int suggestions : {0, 5, 23}) {
+                const auto L = ScreenModel::Compute(w, h, suggestions, info);
+
+                // 1. The prompt is always the last row of the screen.
+                if (L.input.top != h - 1 || L.input.height != 1) promptAlwaysVisible = false;
+
+                // 2. No region may have a negative or wrapped-around size.
+                if (L.header.height < 0 || L.output.height < 0 ||
+                    L.palette.height < 0 || L.input.height < 0) noNegative = false;
+                if (L.output.height < 1) outputUsable = false;
+
+                // 3. Regions must tile the screen without overlapping.
+                if (L.header.Bottom() > L.output.top) noOverlap = false;
+                if (L.output.Bottom() > L.palette.top) noOverlap = false;
+                if (L.palette.Bottom() > L.input.top) noOverlap = false;
+                if (L.header.top != 0) headerInsideScreen = false;
+                if (L.header.Bottom() > h) headerInsideScreen = false;
+
+                // 4. The palette never pushes the output below its floor.
+                if (L.palette.height > 0 &&
+                    L.output.height < ScreenModel::kMinOutputRows) paletteFits = false;
+            }
+        }
+    }
+
+    Check(promptAlwaysVisible, "The prompt occupies the last row at every width and height");
+    Check(noNegative, "No region is ever assigned a negative height");
+    Check(outputUsable, "The output region always keeps at least one row");
+    Check(noOverlap, "Header, output, palette and input never overlap");
+    Check(headerInsideScreen, "The header always starts at row 0 and stays on screen");
+    Check(paletteFits, "Opening the palette never starves the output below its minimum");
+}
+
+static void TestHeightResponsiveHeader() {
+    Section("Screen 2: height-responsive header selection");
+
+    StartupInfo info = StartupInfo::Detect();
+
+    // A tall terminal keeps the approved full card, artwork and tips included.
+    const auto tall = ScreenModel::Compute(120, 50, 0, info);
+    Check(tall.headerVariant == HeaderVariant::Full,
+          "A tall terminal shows the full Vampire card with tips");
+    Check(tall.output.height >= ScreenModel::kPreferredOutputRows,
+          "A tall terminal still gives the output its preferred height");
+
+    // A normal, non-maximized window must still show useful output.
+    bool normalWindowsUsable = true;
+    for (int h : {24, 25, 30}) {
+        const auto L = ScreenModel::Compute(120, h, 0, info);
+        if (L.output.height < ScreenModel::kPreferredOutputRows) normalWindowsUsable = false;
+        if (!L.hasHeader) normalWindowsUsable = false;
+    }
+    Check(normalWindowsUsable,
+          "At 24, 25 and 30 rows the header shrinks so the output keeps 8+ rows");
+
+    // The header degrades rather than the output.
+    const auto medium = ScreenModel::Compute(120, 30, 0, info);
+    Check(medium.headerVariant != HeaderVariant::Full,
+          "A 30-row terminal degrades the header instead of the output viewport");
+    Check(medium.hasHeader, "A 30-row terminal still shows a Dracula header");
+
+    // Monotonicity: the header never gets richer as the terminal gets shorter.
+    auto rank = [](HeaderVariant v) {
+        switch (v) {
+            case HeaderVariant::Full:       return 4;
+            case HeaderVariant::FullNoTips: return 3;
+            case HeaderVariant::Compact:    return 2;
+            case HeaderVariant::Minimal:    return 1;
+            default:                        return 0;
+        }
+    };
+    bool monotonic = true;
+    int previous = -1;
+    for (int h : kTestHeights) {
+        const int current = rank(ScreenModel::Compute(120, h, 0, info).headerVariant);
+        if (previous >= 0 && current < previous) monotonic = false;
+        previous = current;
+    }
+    Check(monotonic, "The header variant never gets richer as the terminal gets shorter");
+
+    // Very short terminals stay usable and never crash.
+    bool shortSafe = true;
+    for (int h : {3, 5, 8, 10, 12, 15}) {
+        const auto L = ScreenModel::Compute(80, h, 0, info);
+        if (L.input.top != h - 1) shortSafe = false;
+        if (L.output.height < 1) shortSafe = false;
+        if (L.header.Bottom() > L.output.top) shortSafe = false;
+    }
+    Check(shortSafe, "Terminals down to 3 rows keep a prompt and at least one output row");
+
+    // Growing the terminal restores the full artwork automatically.
+    Check(rank(ScreenModel::Compute(120, 60, 0, info).headerVariant) == 4,
+          "Enlarging the terminal restores the full Vampire header");
+}
+
+static void TestPaletteResponsiveHeight() {
+    Section("Screen 3: palette height adapts instead of eating the output");
+
+    StartupInfo info = StartupInfo::Detect();
+
+    const auto tall = ScreenModel::Compute(120, 50, 23, info);
+    Check(tall.paletteItems == ScreenModel::kPreferredPaletteItems,
+          "A tall terminal shows the full 8-row palette viewport");
+
+    const auto shortWindow = ScreenModel::Compute(120, 20, 23, info);
+    Check(shortWindow.paletteItems > 0 &&
+          shortWindow.paletteItems < ScreenModel::kPreferredPaletteItems,
+          "A short terminal shrinks the palette viewport rather than the output");
+    Check(shortWindow.output.height >= ScreenModel::kMinOutputRows,
+          "Output survives with the palette open on a short terminal");
+
+    // Opening the palette shrinks the output and closing it restores the rows.
+    const auto closed = ScreenModel::Compute(120, 40, 0, info);
+    const auto open   = ScreenModel::Compute(120, 40, 23, info);
+    Check(open.output.height < closed.output.height,
+          "Opening the palette shrinks the output region");
+    Check(open.header.height == closed.header.height,
+          "Opening the palette does not move or resize the header");
+    Check(open.input.top == closed.input.top,
+          "Opening the palette does not move the prompt");
+    Check(open.output.height >= ScreenModel::kMinOutputRows,
+          "Some previous output stays visible while the palette is open");
+
+    // The palette list still scrolls in a reduced viewport.
+    LineEditor editor;
+    editor.ResetBuffer();
+    editor.InsertString("/");
+    auto rows = editor.BuildPopupRows(100, 3);
+    Check(rows.size() == 4, "A 3-row palette viewport renders 3 items plus the footer");
+    Check(rows.back().find("browse") != std::string::npos,
+          "A truncated palette tells the user the list scrolls");
+}
+
+// ─── 9. Output buffer scrolling ─────────────────────────────────────────────
+
+static void TestOutputBufferScrolling() {
+    Section("Screen 4: output history and scrolling");
+
+    const int H = 10;
+    const int W = 80;
+
+    OutputBuffer empty;
+    Check(empty.LineCount() == 0, "A new buffer is empty");
+    Check(empty.VisibleRows(H, W).empty(), "An empty buffer renders no rows");
+    Check(empty.IsFollowing(), "An empty buffer follows the newest output");
+    empty.ScrollUp(H, 3);
+    empty.ScrollPageUp(H);
+    Check(empty.LineCount() == 0, "Scrolling an empty buffer is a safe no-op");
+
+    OutputBuffer one;
+    one.AppendLine("only");
+    Check(one.VisibleRows(H, W).size() == 1, "A single line renders once");
+    Check(!one.HasOlderAbove(H, W) && !one.HasNewerBelow(H, W),
+          "A single line has nothing above or below it");
+
+    OutputBuffer exact;
+    for (int i = 0; i < H; ++i) exact.AppendLine("line " + std::to_string(i));
+    Check(exact.VisibleRows(H, W).size() == static_cast<size_t>(H),
+          "Exactly one viewport of lines fills the viewport");
+    Check(!exact.HasOlderAbove(H, W), "A full-but-not-overflowing viewport has nothing above");
+
+    OutputBuffer over;
+    for (int i = 0; i < H + 1; ++i) over.AppendLine("line " + std::to_string(i));
+    Check(over.HasOlderAbove(H, W), "One line more than the viewport puts content above");
+
+    OutputBuffer buffer;
+    for (int i = 0; i < 100; ++i) buffer.AppendLine("line " + std::to_string(i));
+
+    Check(buffer.IsFollowing(), "Appending output keeps the viewport following the newest line");
+    Check(buffer.VisibleRows(H, W).back().find("line 99") != std::string::npos,
+          "The newest line is visible while following");
+
+    // Wheel scrolling.
+    buffer.ScrollUp(H, OutputBuffer::kWheelLines);
+    Check(!buffer.IsFollowing(), "Scrolling up detaches the viewport from the newest output");
+    size_t first = 0, last = 0;
+    buffer.VisibleRange(H, W, first, last);
+    Check(first == 91 - OutputBuffer::kWheelLines,
+          "A wheel notch moves the viewport by exactly three lines");
+
+    buffer.ScrollDown(H, OutputBuffer::kWheelLines);
+    Check(buffer.IsFollowing(), "Scrolling back down re-attaches to the newest output");
+
+    // Page scrolling.
+    buffer.ScrollPageUp(H);
+    buffer.VisibleRange(H, W, first, last);
+    Check(first == 91 - (H - 1), "PageUp moves the viewport by one page");
+    buffer.ScrollPageDown(H);
+    Check(buffer.IsFollowing(), "PageDown from one page up returns to the newest output");
+
+    // Clamping.
+    for (int i = 0; i < 50; ++i) buffer.ScrollPageUp(H);
+    buffer.VisibleRange(H, W, first, last);
+    Check(first == 1, "Scrolling up clamps at the oldest line");
+    Check(buffer.HasNewerBelow(H, W), "At the top the buffer reports newer output below");
+
+    for (int i = 0; i < 50; ++i) buffer.ScrollPageDown(H);
+    Check(buffer.IsFollowing(), "Scrolling down clamps at the newest line and resumes following");
+
+    buffer.ScrollToTop();
+    Check(!buffer.IsFollowing(), "ScrollToTop detaches from the newest output");
+    buffer.ScrollToBottom();
+    Check(buffer.IsFollowing(), "ScrollToBottom resumes following");
+
+    // New output while manually scrolled must not yank the viewport.
+    buffer.ScrollPageUp(H);
+    buffer.VisibleRange(H, W, first, last);
+    const size_t before = first;
+    buffer.AppendLine("brand new line");
+    buffer.VisibleRange(H, W, first, last);
+    Check(!buffer.IsFollowing() && first == before,
+          "New output does not snap a manually scrolled viewport back to the bottom");
+
+    buffer.Clear();
+    Check(buffer.LineCount() == 0 && buffer.IsFollowing(),
+          "Clear empties the history and returns to the newest position");
+
+    // History bound.
+    OutputBuffer bounded;
+    for (size_t i = 0; i < OutputBuffer::kMaxLines + 500; ++i) {
+        bounded.AppendLine("x");
+    }
+    Check(bounded.LineCount() == OutputBuffer::kMaxLines,
+          "Output history is bounded at its documented limit");
+
+    // ANSI content and wrapping.
+    OutputBuffer styled;
+    styled.AppendLine("\033[31m" + std::string(200, 'a') + "\033[0m");
+    auto wrapped = styled.VisibleRows(H, 40);
+    bool wrapOk = wrapped.size() == 5;
+    for (const auto& row : wrapped) {
+        if (Text::VisibleWidth(row) > 40) wrapOk = false;
+    }
+    Check(wrapOk, "A long ANSI-styled line wraps to the viewport width without losing cells");
+
+    // Stream capture.
+    OutputBuffer sunk;
+    {
+        OutputSink sink(sunk);
+        std::ostream out(&sink);
+        out << "alpha\nbeta\n" << "gamma" << "\n";
+    }
+    Check(sunk.LineCount() == 3 && sunk.LineAt(1) == "beta",
+          "OutputSink routes stream writes into the history line by line");
+}
+
+static void TestScrollKeyMapping() {
+    Section("Screen 5: input events map to the right scroll actions");
+
+    LineEditor editor;
+    editor.ResetBuffer();
+
+    auto action = [&](Key key) {
+        InputEvent ev;
+        ev.key = key;
+        return editor.HandleKey(ev);
+    };
+
+    Check(action(Key::PageUp)    == LineEditor::EditAction::ScrollPageUp,   "PageUp scrolls the output up a page");
+    Check(action(Key::PageDown)  == LineEditor::EditAction::ScrollPageDown, "PageDown scrolls the output down a page");
+    Check(action(Key::WheelUp)   == LineEditor::EditAction::ScrollLineUp,   "Wheel up scrolls the output up");
+    Check(action(Key::WheelDown) == LineEditor::EditAction::ScrollLineDown, "Wheel down scrolls the output down");
+    Check(action(Key::CtrlHome)  == LineEditor::EditAction::ScrollTop,      "Ctrl+Home jumps to the oldest output");
+    Check(action(Key::CtrlEnd)   == LineEditor::EditAction::ScrollBottom,   "Ctrl+End jumps to the newest output");
+    Check(action(Key::Resize)    == LineEditor::EditAction::Resize,         "A resize event is surfaced to the screen");
+
+    // Scrolling must never disturb the input buffer or the palette.
+    editor.InsertString("/s");
+    const std::string buffer = editor.GetBuffer();
+    const size_t selection = editor.GetPaletteSelection();
+    action(Key::WheelUp);
+    action(Key::PageDown);
+    Check(editor.GetBuffer() == buffer, "Scrolling does not modify the input buffer");
+    Check(editor.GetPaletteSelection() == selection, "Scrolling does not move the palette selection");
+    Check(editor.IsPaletteActive(), "Scrolling does not close the palette");
+
+    // Up/Down still belong to the palette and the history.
+    editor.PaletteMoveDown();
+    Check(editor.GetPaletteSelection() == selection + 1,
+          "Up/Down remain bound to palette navigation, not output scrolling");
+}
+
+static void TestResizePreservesState() {
+    Section("Screen 6: resize preserves session state");
+
+    StartupInfo info = StartupInfo::Detect();
+
+    // Input text and palette selection live in the editor, which the layout
+    // never touches - a resize only recomputes rectangles.
+    LineEditor editor;
+    editor.ResetBuffer();
+    editor.InsertString("/s");
+    editor.PaletteMoveDown();
+    const std::string typed = editor.GetBuffer();
+    const size_t selection = editor.GetPaletteSelection();
+
+    const auto wide = ScreenModel::Compute(160, 50,
+                                           static_cast<int>(editor.GetSuggestions().size()), info);
+    const auto narrow = ScreenModel::Compute(70, 20,
+                                             static_cast<int>(editor.GetSuggestions().size()), info);
+
+    Check(editor.GetBuffer() == typed, "Typed input survives a resize");
+    Check(editor.GetPaletteSelection() == selection, "Palette selection survives a resize");
+    Check(wide.input.top == 49 && narrow.input.top == 19,
+          "The prompt re-anchors to the new last row");
+    Check(narrow.output.height >= ScreenModel::kMinOutputRows,
+          "The output region stays usable after shrinking");
+
+    // The scroll position is a logical line index, so it survives a width change.
+    OutputBuffer buffer;
+    for (int i = 0; i < 200; ++i) buffer.AppendLine("line " + std::to_string(i));
+    buffer.ScrollPageUp(20);
+    const size_t anchor = buffer.ScrollAnchor();
+    size_t firstWide = 0, lastWide = 0;
+    buffer.VisibleRange(20, 160, firstWide, lastWide);
+    size_t firstNarrow = 0, lastNarrow = 0;
+    buffer.VisibleRange(10, 70, firstNarrow, lastNarrow);
+    Check(buffer.ScrollAnchor() == anchor && firstWide == firstNarrow,
+          "Output scroll position is preserved across a width and height change");
+}
+
 int main() {
     Terminal::Initialize();
 
@@ -703,6 +1043,12 @@ int main() {
     TestActiveSessionReuse();
     TestVersionSingleSource();
     TestResourceResolution();
+    TestScreenRegionMatrix();
+    TestHeightResponsiveHeader();
+    TestPaletteResponsiveHeight();
+    TestOutputBufferScrolling();
+    TestScrollKeyMapping();
+    TestResizePreservesState();
 
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << " TERMINAL UI RESULTS: \033[1;32m" << g_pass << " PASSED\033[0m, \033[1;31m"

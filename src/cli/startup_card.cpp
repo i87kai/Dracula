@@ -151,7 +151,13 @@ namespace Dracula {
     }
 
     std::vector<std::string> StartupCard::RenderCard(int terminalWidth, const StartupInfo& info) {
-        const StartupLayout layout = SelectLayout(terminalWidth);
+        return RenderCardMode(terminalWidth, SelectLayout(terminalWidth), info);
+    }
+
+    std::vector<std::string> StartupCard::RenderCardMode(int terminalWidth,
+                                                         StartupLayout layout,
+                                                         const StartupInfo& info,
+                                                         bool includeTips) {
 
         if (layout == StartupLayout::Minimal) {
             std::vector<std::string> lines;
@@ -205,13 +211,103 @@ namespace Dracula {
 
         box.AddBlank();
 
-        auto tips = TipLines(info, inner);
-        if (!tips.empty()) {
-            box.AddDivider();
-            box.AddLines(tips);
+        // Tips are helpful, not essential: they are the first thing dropped
+        // when the terminal is too short to afford them.
+        if (includeTips) {
+            auto tips = TipLines(info, inner);
+            if (!tips.empty()) {
+                box.AddDivider();
+                box.AddLines(tips);
+            }
         }
 
         return box.Build();
+    }
+
+    std::vector<std::string> StartupCard::RenderHeader(int terminalWidth,
+                                                       HeaderVariant variant,
+                                                       const StartupInfo& info) {
+        switch (variant) {
+            case HeaderVariant::None:
+                return {};
+
+            case HeaderVariant::Full:
+                return RenderCardMode(terminalWidth, SelectLayout(terminalWidth), info, true);
+
+            case HeaderVariant::FullNoTips:
+                return RenderCardMode(terminalWidth, SelectLayout(terminalWidth), info, false);
+
+            case HeaderVariant::Compact: {
+                // Four rows: the two-row vampire mark beside the identity and
+                // the engine list. Same palette, same borders, same identity.
+                const int cardWidth = CardWidth(terminalWidth);
+                Text::BoxBuilder box(static_cast<size_t>(cardWidth), kBoxPadding);
+                const size_t inner = box.InnerWidth();
+
+                const auto& mark = Art::VampireMini();
+                const size_t markWidth = Art::MaxWidth(mark);
+                const size_t rightWidth = inner > markWidth + kColumnGap
+                                        ? inner - markWidth - kColumnGap
+                                        : inner;
+
+                std::string identity = Title() + "Dracula" + Reset() +
+                                       Muted() + "  v" + info.version;
+                if (!info.architecture.empty()) {
+                    identity += "  " + Terminal::Bullet() + "  " + info.architecture;
+                }
+                if (!info.buildMode.empty()) {
+                    identity += "  " + Terminal::Bullet() + "  " + info.buildMode;
+                }
+                identity += Reset();
+
+                std::string engines;
+                for (size_t i = 0; i < info.engines.size(); ++i) {
+                    if (i) engines += "  " + Terminal::Bullet() + "  ";
+                    engines += info.engines[i];
+                }
+
+                std::vector<std::string> right = {
+                    identity,
+                    Tech() + Text::Truncate(engines, rightWidth) + Reset()
+                };
+
+                if (markWidth + kColumnGap < inner) {
+                    box.AddLines(Text::RenderColumns({Art::Colorize(mark), right},
+                                                     {markWidth, rightWidth},
+                                                     kColumnGap));
+                } else {
+                    box.AddLines(right);
+                }
+                return box.Build();
+            }
+
+            case HeaderVariant::Minimal:
+            default: {
+                const size_t w = static_cast<size_t>(std::max(terminalWidth - 2, 12));
+
+                std::string identity = Title() + "Dracula" + Reset() +
+                                       Muted() + "  v" + info.version;
+                if (!info.architecture.empty()) {
+                    identity += "  " + Terminal::Bullet() + "  " + info.architecture;
+                }
+                if (!info.buildMode.empty()) {
+                    identity += "  " + Terminal::Bullet() + "  " + info.buildMode;
+                }
+                identity += Reset();
+
+                std::string engines;
+                for (size_t i = 0; i < info.engines.size(); ++i) {
+                    if (i) engines += "  " + Terminal::Bullet() + "  ";
+                    engines += info.engines[i];
+                }
+
+                return {
+                    Text::Truncate(identity, w),
+                    Text::Truncate(Tech() + engines + Reset(), w),
+                    Terminal::Color(ColorRole::Border) + Text::HorizontalRule(w) + Reset()
+                };
+            }
+        }
     }
 
     std::vector<std::string> StartupCard::Render(int terminalWidth, const StartupInfo& info) {

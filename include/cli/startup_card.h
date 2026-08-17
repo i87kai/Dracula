@@ -35,6 +35,17 @@ namespace Dracula {
         static StartupInfo Detect();
     };
 
+    // How much vertical space the persistent header is allowed to claim.
+    // Chosen from the terminal HEIGHT, after the width has chosen the artwork
+    // layout. Decorative detail is sacrificed before output rows are.
+    enum class HeaderVariant {
+        Full,        // the approved card, artwork + information + tips
+        FullNoTips,  // the same card without the tips block
+        Compact,     // four rows: two-row vampire mark + identity + engines
+        Minimal,     // two text rows plus a rule
+        None         // no header at all (extremely short terminals)
+    };
+
     class StartupCard {
     public:
         // Width thresholds (display cells) at which the layout changes.
@@ -50,6 +61,20 @@ namespace Dracula {
 
         // The card box only (no trailing hint), used by layout tests.
         static std::vector<std::string> RenderCard(int terminalWidth, const StartupInfo& info);
+
+        // The card box in an explicitly chosen layout. The persistent header
+        // uses this to degrade richness when the terminal is short, rather than
+        // dropping the Dracula identity entirely.
+        static std::vector<std::string> RenderCardMode(int terminalWidth,
+                                                       StartupLayout layout,
+                                                       const StartupInfo& info,
+                                                       bool includeTips = true);
+
+        // The persistent header in a given height variant. Returns an empty
+        // vector for HeaderVariant::None.
+        static std::vector<std::string> RenderHeader(int terminalWidth,
+                                                     HeaderVariant variant,
+                                                     const StartupInfo& info);
 
         // Outer width of the card box at a given terminal width.
         static int CardWidth(int terminalWidth);

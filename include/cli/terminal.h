@@ -47,6 +47,12 @@ namespace Dracula {
         static int GetWidth();
         static int GetHeight();
 
+        // Width available to command output. In the persistent interactive
+        // layout this is the output region's width, not the console width, so
+        // no command ever draws behind the frame. 0 restores automatic sizing.
+        static void SetContentWidth(int width);
+        static int ContentWidth();
+
         // Semantic color formatter
         static std::string Color(ColorRole role);
         static const char* ColorRaw(ColorRole role);
@@ -90,6 +96,26 @@ namespace Dracula {
 #endif
     };
 
+    // ─── Input events ───────────────────────────────────────────────────────
+    //
+    // The interactive shell consumes normalized events rather than raw console
+    // codes. Reading through the console input queue (instead of _getwch) is
+    // what makes WINDOW_BUFFER_SIZE_EVENT - terminal resize - observable.
+    //
+    enum class Key {
+        None, Char, Enter, Tab, Escape, Backspace, Delete,
+        Left, Right, Up, Down, Home, End, PageUp, PageDown,
+        CtrlA, CtrlC, CtrlD, CtrlE, CtrlK, CtrlL, CtrlU,
+        CtrlHome, CtrlEnd,
+        WheelUp, WheelDown,
+        Resize
+    };
+
+    struct InputEvent {
+        Key key = Key::None;
+        std::string utf8;   // populated for Key::Char
+    };
+
     // ─── Centralized redraw primitives ──────────────────────────────────────
     //
     // All cursor movement and line erasing goes through Console. No source file
@@ -112,6 +138,25 @@ namespace Dracula {
         static void MoveRight(int columns);
         static void MoveToColumn(int zeroBasedColumn);
 
+        // Position the cursor absolutely (0-based row/column).
+        static void MoveTo(int row, int column);
+
+        // Alternate screen buffer. Dracula's persistent interactive layout owns
+        // its own screen so it never contaminates the user's scrollback, and
+        // the original buffer is restored untouched on exit.
+        static bool EnterAlternateScreen();
+        static void LeaveAlternateScreen();
+        static bool InAlternateScreen();
+
+        // Blocking read of one normalized input event. Returns false on EOF or
+        // console error.
+        static bool ReadInput(InputEvent& out);
+
+        // Configure the console input queue for the interactive screen: mouse
+        // wheel and resize notifications on, quick-edit selection and VT input
+        // translation off (both of those corrupt the key stream).
+        static void EnableInteractiveInput(bool enable);
+
         // Reset colours, show the cursor and flush. Safe to call repeatedly.
         static void ResetStyle();
     };
@@ -120,7 +165,11 @@ namespace Dracula {
     class TerminalGuard {
     public:
         TerminalGuard() { Terminal::Initialize(); }
-        ~TerminalGuard() { Console::ResetStyle(); Terminal::Restore(); }
+        ~TerminalGuard() {
+            Console::LeaveAlternateScreen();
+            Console::ResetStyle();
+            Terminal::Restore();
+        }
     };
 
     // RAII guard that hides the cursor for the duration of a redraw and always

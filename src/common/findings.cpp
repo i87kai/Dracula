@@ -226,7 +226,7 @@ namespace Dracula {
         const std::string border = Terminal::Color(ColorRole::Border);
 
         const size_t ruleWidth = std::min<size_t>(72,
-            static_cast<size_t>(std::max(Terminal::GetWidth() - 2, 30)));
+            static_cast<size_t>(std::max(Terminal::ContentWidth(), 30)));
         const size_t keyWidth = 22;
 
         auto row = [&](const std::string& key, const std::string& value,
