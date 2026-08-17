@@ -132,8 +132,33 @@ namespace Dracula {
     std::vector<Finding> ThreatEvaluator::NormalizeSandboxEvents(const std::vector<Sandbox::TraceEvent>& events) {
         std::vector<Finding> findings;
 
+        // The guest emits specific event types (ProcessCreated, FileModified,
+        // RegistryValueSet, NetworkConnect); the umbrella values (Process, File,
+        // Registry, Network) are what host-side code uses. Matching only the
+        // umbrella values meant real guest telemetry arrived and then produced
+        // no findings at all, so both are accepted here.
+        auto isProcess = [](Sandbox::EventType t) {
+            return t == Sandbox::EventType::Process ||
+                   t == Sandbox::EventType::ProcessCreated;
+        };
+        auto isFile = [](Sandbox::EventType t) {
+            return t == Sandbox::EventType::File ||
+                   t == Sandbox::EventType::FileCreated ||
+                   t == Sandbox::EventType::FileModified ||
+                   t == Sandbox::EventType::FileDeleted;
+        };
+        auto isRegistry = [](Sandbox::EventType t) {
+            return t == Sandbox::EventType::Registry ||
+                   t == Sandbox::EventType::RegistryKeyCreated ||
+                   t == Sandbox::EventType::RegistryValueSet;
+        };
+        auto isNetwork = [](Sandbox::EventType t) {
+            return t == Sandbox::EventType::Network ||
+                   t == Sandbox::EventType::NetworkConnect;
+        };
+
         for (const auto& e : events) {
-            if (e.type == Sandbox::EventType::Process) {
+            if (isProcess(e.type)) {
                 Finding f;
                 f.id = "SBX_PROCESS_SPAWNED";
                 f.category = "Runtime Execution";
@@ -145,7 +170,7 @@ namespace Dracula {
                 f.source = "QEMU Sandbox Tracer";
                 f.tags = {"Execution", "ProcessCreation", "MITRE:T1059"};
                 findings.push_back(f);
-            } else if (e.type == Sandbox::EventType::Network) {
+            } else if (isNetwork(e.type)) {
                 Finding f;
                 f.id = "SBX_NETWORK_ACTIVITY";
                 f.category = "Runtime Network";
@@ -157,7 +182,7 @@ namespace Dracula {
                 f.source = "QEMU Sandbox Tracer";
                 f.tags = {"Network", "C2", "MITRE:T1071"};
                 findings.push_back(f);
-            } else if (e.type == Sandbox::EventType::File) {
+            } else if (isFile(e.type)) {
                 Finding f;
                 f.id = "SBX_FILE_ACTIVITY";
                 f.category = "Persistence / Dropper";
@@ -169,7 +194,7 @@ namespace Dracula {
                 f.source = "QEMU Sandbox Tracer";
                 f.tags = {"FileDrop", "Dropper", "MITRE:T1105"};
                 findings.push_back(f);
-            } else if (e.type == Sandbox::EventType::Registry) {
+            } else if (isRegistry(e.type)) {
                 Finding f;
                 f.id = "SBX_REGISTRY_MODIFIED";
                 f.category = "Persistence";

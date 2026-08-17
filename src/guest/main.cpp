@@ -2,6 +2,7 @@
 #include "guest/system_tracer.h"
 #include "guest/tcp_emitter.h"
 #include "common/types.h"
+#include "host/guest_session_handoff.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -15,15 +16,42 @@ int main(int argc, char* argv[]) {
     }
 
     std::string targetExe = argv[1];
-    std::string hostIp = "10.0.2.2"; // Default VirtualBox NAT Host gateway IP
+    std::string hostIp = "10.0.2.2"; // QEMU SLIRP gateway alias for the host
     uint16_t hostPort = 8899;
+    bool portFromArgs = false;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--host-ip" && i + 1 < argc) {
             hostIp = argv[++i];
         } else if (arg == "--host-port" && i + 1 < argc) {
-            hostPort = static_cast<uint16_t>(std::stoi(argv[++i]));
+            try {
+                const int parsed = std::stoi(argv[++i]);
+                if (parsed > 0 && parsed <= 65535) {
+                    hostPort = static_cast<uint16_t>(parsed);
+                    portFromArgs = true;
+                }
+            } catch (...) {
+                std::cerr << "[GuestAgent] Ignoring unparseable --host-port value." << std::endl;
+            }
+        }
+    }
+
+    // The host picks its port at runtime and may not get the configured one, so
+    // it leaves a handoff file on the shared drive. An explicit --host-port
+    // still wins, which keeps a guest provisioned with a fixed port working.
+    if (!portFromArgs) {
+        const char* candidateDrives[] = { "E:\\", "D:\\", "F:\\", "G:\\", "." };
+        for (const char* drive : candidateDrives) {
+            const std::string path = std::string(drive) + Sandbox::kGuestSessionFileName;
+            Sandbox::GuestSessionHandoff handoff;
+            if (Sandbox::ReadGuestSessionHandoff(path, handoff)) {
+                hostIp = handoff.hostIp;
+                hostPort = handoff.hostPort;
+                std::cout << "[GuestAgent] Read session handoff from " << path
+                          << " (host " << hostIp << ":" << hostPort << ")" << std::endl;
+                break;
+            }
         }
     }
 

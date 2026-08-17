@@ -46,6 +46,21 @@ namespace Sandbox::Protocol {
     }
 
     // Robust binary serialization of TraceEvent (handles newlines, pipe characters, etc.)
+    //
+    // Wire layout:
+    //     uint32  event type
+    //     uint64  timestamp (ms)
+    //     string  category
+    //     string  message
+    //     string  details
+    //     -- everything below is OPTIONAL and read only if present --
+    //     uint32  pid
+    //     string  process name
+    //
+    // The trailing fields were added after the original format shipped. They are
+    // appended rather than inserted, and the reader treats them as optional, so
+    // an older GuestAgent that does not send them still deserializes correctly
+    // instead of having every one of its events rejected.
     inline std::vector<uint8_t> SerializeEventBinary(const TraceEvent& event) {
         std::vector<uint8_t> buffer;
         uint32_t t = static_cast<uint32_t>(event.type);
@@ -62,6 +77,15 @@ namespace Sandbox::Protocol {
         AppendString(buffer, event.category);
         AppendString(buffer, event.message);
         AppendString(buffer, event.details);
+
+        // Without these the host received every event with pid 0 and no process
+        // name, which made the sandbox process tree unattributable.
+        uint8_t pidBytes[4];
+        uint32_t pid = event.pid;
+        std::memcpy(pidBytes, &pid, 4);
+        buffer.insert(buffer.end(), pidBytes, pidBytes + 4);
+
+        AppendString(buffer, event.processName);
 
         return buffer;
     }
@@ -84,6 +108,111 @@ namespace Sandbox::Protocol {
         if (!ReadString(data, length, offset, outEvent.message)) return false;
         if (!ReadString(data, length, offset, outEvent.details)) return false;
 
+        // Optional trailing fields. Their absence is not an error: it just means
+        // the sender predates them.
+        if (offset + 4 <= length) {
+            uint32_t pid = 0;
+            std::memcpy(&pid, data + offset, 4);
+            offset += 4;
+            outEvent.pid = pid;
+
+            std::string processName;
+            if (ReadString(data, length, offset, processName)) {
+                outEvent.processName = processName;
+            }
+        }
+
+        return true;
+    }
+
+    // ─── Legacy pipe-delimited payload ──────────────────────────────────────
+    //
+    // Before the binary payload existed, events were sent as text:
+    //
+    //     type|timestampMs|category|message|details
+    //
+    // GuestAgent binaries deployed into an existing guest image still emit it,
+    // and re-provisioning a guest is not something the host can assume. The
+    // packet framing is identical in both versions, so a legacy agent's events
+    // arrive perfectly framed and then fail to decode, which looks exactly like
+    // a silent guest. The host therefore accepts both encodings.
+
+    inline bool LooksLikeLegacyTextPayload(const uint8_t* data, size_t length) {
+        if (!data || length < 4) return false;
+
+        // The binary form starts with a little-endian uint32 event type, so its
+        // second byte is always zero for any real event type. The text form has
+        // a digit or the separator there. That single byte tells them apart.
+        const bool firstIsDigit = (data[0] >= '0' && data[0] <= '9');
+        if (!firstIsDigit) return false;
+        const bool secondIsTextual =
+            (data[1] >= '0' && data[1] <= '9') || data[1] == '|';
+        if (!secondIsTextual) return false;
+
+        // A separator must appear early, as the type field is short.
+        const size_t scan = (length < 16) ? length : 16;
+        for (size_t i = 0; i < scan; ++i) {
+            if (data[i] == '|') return true;
+        }
+        return false;
+    }
+
+    // The legacy agent numbers its event types sequentially, from before the
+    // enum gained explicit values (Process = 38, File = 40, ...). Its numbers
+    // therefore mean something different now: a legacy "4" is a process exit,
+    // but 4 maps to nothing in the current enum, so a finished sample looked
+    // like no event at all and the session ran until it timed out.
+    inline EventType MapLegacyEventType(uint32_t legacy) {
+        switch (legacy) {
+            case 0:  return EventType::Info;
+            case 1:  return EventType::Stdout;
+            case 2:  return EventType::Stderr;
+            case 3:  return EventType::ProcessCreated;
+            case 4:  return EventType::ProcessTerminated;
+            case 5:  return EventType::FileCreated;
+            case 6:  return EventType::FileModified;
+            case 7:  return EventType::FileDeleted;
+            case 8:  return EventType::RegistryKeyCreated;
+            case 9:  return EventType::RegistryValueSet;
+            case 10: return EventType::NetworkConnect;
+            case 11: return EventType::ExecutionStarted;
+            case 12: return EventType::ExecutionFinished;
+            case 13: return EventType::Error;
+            default: break;
+        }
+        // Anything already carrying a modern explicit value is left alone.
+        return static_cast<EventType>(legacy);
+    }
+
+    inline bool DeserializeEventLegacyText(const std::string& text, TraceEvent& outEvent) {
+        const size_t p1 = text.find('|');
+        if (p1 == std::string::npos) return false;
+        const size_t p2 = text.find('|', p1 + 1);
+        if (p2 == std::string::npos) return false;
+        const size_t p3 = text.find('|', p2 + 1);
+        if (p3 == std::string::npos) return false;
+
+        try {
+            outEvent.type = MapLegacyEventType(
+                static_cast<uint32_t>(std::stoul(text.substr(0, p1))));
+            outEvent.timestampMs = std::stoull(text.substr(p1 + 1, p2 - p1 - 1));
+        } catch (...) {
+            return false;
+        }
+
+        outEvent.category = text.substr(p2 + 1, p3 - p2 - 1);
+
+        // Details is the final field, so it is taken from the right. A message
+        // containing a pipe then still survives, which parsing left to right
+        // would not manage.
+        const size_t last = text.rfind('|');
+        if (last <= p3) {
+            outEvent.message = text.substr(p3 + 1);
+            outEvent.details.clear();
+        } else {
+            outEvent.message = text.substr(p3 + 1, last - p3 - 1);
+            outEvent.details = text.substr(last + 1);
+        }
         return true;
     }
 
@@ -94,7 +223,13 @@ namespace Sandbox::Protocol {
     }
 
     inline bool DeserializeEvent(const std::string& data, TraceEvent& outEvent) {
-        return DeserializeEventBinary(reinterpret_cast<const uint8_t*>(data.data()), data.size(), outEvent);
+        const auto* bytes = reinterpret_cast<const uint8_t*>(data.data());
+        if (LooksLikeLegacyTextPayload(bytes, data.size())) {
+            if (DeserializeEventLegacyText(data, outEvent)) return true;
+            // Fall through: a payload that merely looked textual still gets the
+            // binary reader rather than being discarded.
+        }
+        return DeserializeEventBinary(bytes, data.size(), outEvent);
     }
 
     // Helper to serialize TraceOptions sent from Host to Guest

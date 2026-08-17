@@ -356,6 +356,108 @@ does less:
 
 ---
 
+## 2.9 Sandbox Telemetry Networking
+
+### 2.9.1 Roles
+
+Keeping the two roles straight is what makes the port question simple:
+
+```
+        HOST                                   GUEST
+   ┌──────────────┐                      ┌──────────────┐
+   │ LiveTcpServer│  ◄──── connects ──── │  GuestAgent  │
+   │   LISTENS    │      outbound to     │    DIALS     │
+   │  0.0.0.0:P   │       10.0.2.2:P     │     OUT      │
+   └──────────────┘                      └──────────────┘
+```
+
+`10.0.2.2` is the gateway alias QEMU's SLIRP user-mode networking gives every
+guest for reaching the host. Because traffic only ever flows outbound, **no
+inbound port forwarding is required**, and `hostfwd` is deliberately absent from
+the QEMU command line.
+
+> This was the bug. Dracula bound host port 8899 for its listener and then asked
+> QEMU to forward the same host port inbound. QEMU could not bind a port Dracula
+> already held, so it printed `Could not set up host forwarding rule` and exited
+> about a second after launch. The guest never booted. The forwarding rule was
+> never needed for anything.
+
+### 2.9.2 Port allocation
+
+Allocation is **bind-and-hold**: the port is claimed by a real `bind()` and the
+live socket is handed to the listener, so there is no check-then-bind window for
+another process to slip through, and the caller learns the port that was
+*actually* bound rather than the one requested.
+
+| Strategy | Behaviour |
+|---|---|
+| `fixed` | Use exactly `host_listen_port`, or fail with the reason |
+| `preferred-then-range` | *(default)* Try `host_listen_port`, then scan the range, then fall back to an OS-assigned port |
+| `ephemeral` | Let the OS assign any free port |
+
+The default prefers the configured port so a guest image provisioned with a
+fixed port keeps working, and Dracula only moves when that port is genuinely
+taken.
+
+The listening socket uses **`SO_EXCLUSIVEADDRUSE`, not `SO_REUSEADDR`**. On
+Windows `SO_REUSEADDR` lets a second socket bind an address another socket is
+already using, which is exactly the collision this code exists to detect;
+exclusive use turns a conflict into an honest, reportable failure.
+
+### 2.9.3 Startup order
+
+The ordering is load bearing, because QEMU snapshots the shared folder into a
+read-only FAT drive at launch:
+
+```
+1. bind the listener        -> only now is the real port known
+2. stage the sample AND
+   write dracula_session.ini -> the guest can only see what exists at launch
+3. launch QEMU               -> nothing here binds a host port
+4. wait                      -> connect budget, then execution budget
+5. terminate QEMU            -> in-memory snapshot delta discarded
+```
+
+`dracula_session.ini` carries the host address and the port that was actually
+bound. GuestAgent prefers an explicit `--host-port` argument and falls back to
+this file, so both new and already-provisioned guests work.
+
+### 2.9.4 Timeouts
+
+Two independent budgets, because booting and running are different things:
+
+* **connect budget** (`guest_connect_timeout_seconds`, default 240s) covers
+  guest boot and auto-login, measured from launch.
+* **execution budget** (`execution_timeout_seconds`) covers the sample itself and
+  only starts once the agent is on the line.
+
+Sharing one budget meant a 60 second execution limit silently capping a four
+minute boot.
+
+### 2.9.5 Wire format
+
+Packet framing is a `PacketHeader` (magic, payload length, event type,
+timestamp) followed by the payload. The host accepts **two payload encodings**:
+
+* **binary** — length-prefixed fields, with `pid` and process name as optional
+  trailing fields so an older agent that omits them still decodes;
+* **legacy text** — `type|timestamp|category|message|details`, which agents
+  deployed into existing guest images still emit.
+
+The framing is identical in both, so a legacy agent's events arrive perfectly
+framed and would otherwise decode to nothing at all — which looks exactly like a
+silent guest. Legacy sequential event-type numbers are mapped onto the current
+enum as part of that path.
+
+### 2.9.6 Diagnostics
+
+The session reports bytes on the wire, events decoded and framing
+resynchronisations separately, because "the agent sent nothing" and "the agent
+sent something the host could not decode" are very different faults that
+otherwise look identical.
+
+---
+
 ## 3. Interactive Shell & CLI Reference
 
 Launch interactive mode:

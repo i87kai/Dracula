@@ -113,6 +113,27 @@ namespace Sandbox {
                 else if (key == "host_listen_port" || key == "port") {
                     try { m_vmConfig.hostPort = static_cast<uint16_t>(std::stoul(val)); } catch (...) {}
                 }
+                else if (key == "port_strategy") {
+                    std::string s = val;
+                    std::transform(s.begin(), s.end(), s.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (s == "fixed" || s == "strict") {
+                        m_vmConfig.portStrategy = PortStrategy::Fixed;
+                    } else if (s == "ephemeral" || s == "any" || s == "os") {
+                        m_vmConfig.portStrategy = PortStrategy::Ephemeral;
+                    } else {
+                        m_vmConfig.portStrategy = PortStrategy::PreferredThenRange;
+                    }
+                }
+                else if (key == "port_range_begin") {
+                    try { m_vmConfig.portRangeBegin = static_cast<uint16_t>(std::stoul(val)); } catch (...) {}
+                }
+                else if (key == "port_range_end") {
+                    try { m_vmConfig.portRangeEnd = static_cast<uint16_t>(std::stoul(val)); } catch (...) {}
+                }
+                else if (key == "guest_connect_timeout_seconds" || key == "connect_timeout") {
+                    try { m_vmConfig.guestConnectTimeoutSeconds = static_cast<uint32_t>(std::stoul(val)); } catch (...) {}
+                }
             } else if (currentSection == "tracing") {
                 if (key == "monitor_stdout") m_traceOptions.monitorConsoleOutput = parseBool(val);
                 else if (key == "monitor_processes") m_traceOptions.monitorProcesses = parseBool(val);
@@ -152,8 +173,18 @@ namespace Sandbox {
              << "accelerators = " << m_qemuConfig.accelerators << "\n"
              << "headless = " << (m_qemuConfig.headless ? "true" : "false") << "\n\n"
              << "[Network]\n"
+             << "; The guest dials OUT to the host through the QEMU SLIRP gateway at\n"
+             << "; 10.0.2.2, so no inbound port forwarding is used or needed.\n"
              << "host_listen_ip = " << m_vmConfig.hostListenIp << "\n"
-             << "host_listen_port = " << m_vmConfig.hostPort << "\n\n"
+             << "host_listen_port = " << m_vmConfig.hostPort << "\n"
+             << "; fixed | preferred-then-range | ephemeral\n"
+             << "port_strategy = "
+             << (m_vmConfig.portStrategy == PortStrategy::Fixed ? "fixed"
+                 : m_vmConfig.portStrategy == PortStrategy::Ephemeral ? "ephemeral"
+                 : "preferred-then-range") << "\n"
+             << "port_range_begin = " << m_vmConfig.portRangeBegin << "\n"
+             << "port_range_end = " << m_vmConfig.portRangeEnd << "\n"
+             << "guest_connect_timeout_seconds = " << m_vmConfig.guestConnectTimeoutSeconds << "\n\n"
              << "[Tracing]\n"
              << "monitor_stdout = " << (m_traceOptions.monitorConsoleOutput ? "true" : "false") << "\n"
              << "monitor_processes = " << (m_traceOptions.monitorProcesses ? "true" : "false") << "\n"

@@ -1,5 +1,6 @@
 #include "core/dynamic_vm_analyzer.h"
 #include "common/config.h"
+#include "host/guest_session_handoff.h"
 #include <iostream>
 #include <filesystem>
 #include <thread>
@@ -28,6 +29,17 @@ namespace Sandbox {
         const auto& qemuCfg = ConfigManager::Instance().GetQemuConfig();
         m_qemu = std::make_unique<QemuManager>(qemuCfg);
         m_tcpServer = std::make_unique<LiveTcpServer>(m_vmConfig.hostListenIp, m_vmConfig.hostPort);
+
+        // Port policy comes from configuration. The default prefers the
+        // configured port, so a guest image provisioned with a fixed port keeps
+        // working, and only moves elsewhere when that port is genuinely taken.
+        PortRequest request;
+        request.listenIp = m_vmConfig.hostListenIp;
+        request.preferredPort = m_vmConfig.hostPort;
+        request.rangeBegin = m_vmConfig.portRangeBegin;
+        request.rangeEnd = m_vmConfig.portRangeEnd;
+        request.strategy = m_vmConfig.portStrategy;
+        m_tcpServer->SetPortRequest(request);
 
         return true;
     }
@@ -100,59 +112,178 @@ namespace Sandbox {
 
         emitLocal(EventType::Info, "QemuHost", "Starting dynamic analysis session for: " + executablePath);
 
-        // Step 1: Start Host TCP Server
-        emitLocal(EventType::Info, "Network", "Starting TCP Live Stream Receiver on port " + std::to_string(m_vmConfig.hostPort));
+        // The ordering below is load bearing.
+        //
+        //   1. Bind the host listener first, because only then is the actual
+        //      port known -- it may not be the configured one.
+        //   2. Stage the sample AND write the session handoff into the share,
+        //      because QEMU snapshots that directory into a read-only FAT drive
+        //      at launch. Anything written afterwards the guest cannot see.
+        //   3. Only then launch QEMU.
+
+        // Step 1: bind the telemetry listener and learn the real port.
         if (!m_tcpServer->Start([this](const TraceEvent& evt) { HandleIncomingEvent(evt); }, m_options)) {
-            emitLocal(EventType::Error, "Network", "Failed to start Host TCP Server on port " + std::to_string(m_vmConfig.hostPort));
+            emitLocal(EventType::Error, "Network",
+                      "Failed to start the host telemetry listener: " + m_tcpServer->LastError());
+            m_isRunning = false;
             return false;
         }
 
-        // Step 2: Stage target binary into guest_share directory
+        const uint16_t boundPort = m_tcpServer->ActualPort();
+        if (m_tcpServer->UsedPreferredPort()) {
+            emitLocal(EventType::Info, "Network",
+                      "Host telemetry listener bound on the configured port " + std::to_string(boundPort));
+        } else {
+            emitLocal(EventType::Info, "Network",
+                      "Configured port " + std::to_string(m_vmConfig.hostPort) +
+                      " was unavailable; the host telemetry listener bound port " +
+                      std::to_string(boundPort) + " instead and the guest will be told to use it");
+        }
+
+        // Everything below must release the listener on the way out.
+        struct ServerGuard {
+            LiveTcpServer* server;
+            bool armed = true;
+            ~ServerGuard() { if (armed && server) server->Stop(); }
+        } serverGuard{m_tcpServer.get()};
+
+        // Step 2: stage the sample and the session handoff into the share.
         const auto& qemuCfg = m_qemu->GetConfig();
-        std::string shareDir = qemuCfg.guestShareDir;
+        const std::string shareDir = qemuCfg.guestShareDir;
         try {
             std::filesystem::create_directories(shareDir);
-            std::string destPath = shareDir + "/target_sample.exe";
-            std::filesystem::copy_file(executablePath, destPath, std::filesystem::copy_options::overwrite_existing);
+            const std::string destPath = shareDir + "/target_sample.exe";
+            std::filesystem::copy_file(executablePath, destPath,
+                                       std::filesystem::copy_options::overwrite_existing);
             emitLocal(EventType::Info, "Sandbox", "Staged target binary into " + destPath);
         } catch (const std::exception& ex) {
-            emitLocal(EventType::Error, "Sandbox", std::string("Failed to copy binary to guest_share: ") + ex.what());
+            emitLocal(EventType::Error, "Sandbox",
+                      std::string("Failed to copy binary to guest_share: ") + ex.what());
         }
 
-        // Step 3: Launch QEMU with non-destructive in-memory -snapshot mode
-        emitLocal(EventType::Info, "QEMU", "Launching isolated QEMU sandbox with in-memory -snapshot protection...");
-        if (!m_qemu->StartQemu(m_vmConfig.headlessMode, m_vmConfig.hostPort)) {
-            emitLocal(EventType::Error, "QEMU", "Failed to start QEMU hypervisor process.");
-            m_tcpServer->Stop();
-            return false;
+        GuestSessionHandoff handoff;
+        handoff.hostIp = "10.0.2.2";       // SLIRP gateway alias for the host
+        handoff.hostPort = boundPort;
+        handoff.timeoutSeconds = m_options.executionTimeoutSeconds;
+        handoff.sessionId = std::to_string(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+
+        std::string handoffError;
+        if (WriteGuestSessionHandoff(shareDir, handoff, handoffError)) {
+            emitLocal(EventType::Info, "Sandbox",
+                      "Wrote guest session handoff (host " + handoff.hostIp + ":" +
+                      std::to_string(handoff.hostPort) + ") into the shared folder");
+        } else {
+            emitLocal(EventType::Error, "Sandbox",
+                      "Could not write the guest session handoff: " + handoffError +
+                      ". A guest provisioned with a fixed port will still connect.");
         }
 
-        emitLocal(EventType::ExecutionStarted, "QEMU", "QEMU Guest running. Awaiting live telemetry connection from GuestAgent...");
+        // Step 3: launch QEMU. No inbound port forwarding is requested, so
+        // nothing here can contend with the listener bound in step 1.
+        emitLocal(EventType::Info, "QEMU",
+                  "Launching isolated QEMU sandbox with in-memory -snapshot protection...");
+        if (!m_qemu->StartQemu(m_vmConfig.headlessMode)) {
+            emitLocal(EventType::Error, "QEMU", "Failed to start QEMU: " + m_qemu->LastError());
+            m_isRunning = false;
+            return false;   // serverGuard releases the listener
+        }
 
-        // Step 4: Wait for guest execution completion or timeout
-        auto startTime = std::chrono::steady_clock::now();
-        uint32_t timeoutSec = m_options.executionTimeoutSeconds;
+        emitLocal(EventType::ExecutionStarted, "QEMU",
+                  "QEMU guest running. Awaiting the GuestAgent connection on port " +
+                  std::to_string(boundPort) + "...");
+
+        // Step 4: wait for the guest.
+        //
+        // Two independent budgets, because booting and running are different
+        // things. The connect budget covers boot and auto-login and runs from
+        // launch; the execution budget covers the sample itself and only starts
+        // once the agent is actually on the line. Sharing one budget would mean
+        // a 60 second execution limit silently capping a four minute boot.
+        const auto launchTime = std::chrono::steady_clock::now();
+        auto connectedTime = std::chrono::steady_clock::time_point{};
+        const uint32_t executionTimeoutSec = m_options.executionTimeoutSeconds;
+        const uint32_t connectTimeoutSec = m_vmConfig.guestConnectTimeoutSeconds;
+        bool qemuDied = false;
 
         while (m_isRunning) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
             if (!m_qemu->IsRunning()) {
-                emitLocal(EventType::Info, "QEMU", "QEMU instance exited.");
+                emitLocal(EventType::Error, "QEMU",
+                          "QEMU exited unexpectedly (exit code " + std::to_string(m_qemu->ExitCode()) + ").");
+                qemuDied = true;
                 break;
             }
 
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - startTime).count();
+            const bool connected = m_tcpServer->EverConnected();
+            if (connected && connectedTime == std::chrono::steady_clock::time_point{}) {
+                connectedTime = std::chrono::steady_clock::now();
+                const auto bootSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+                    connectedTime - launchTime).count();
+                emitLocal(EventType::Info, "Network",
+                          "GuestAgent connected after " + std::to_string(bootSeconds) +
+                          "s. Live telemetry is flowing.");
+            }
 
-            if (elapsed >= timeoutSec) {
-                emitLocal(EventType::Info, "QemuHost", "Execution timeout reached (" + std::to_string(timeoutSec) + "s). Stopping session.");
+            if (!connected) {
+                const auto waiting = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - launchTime).count();
+                if (connectTimeoutSec > 0 && static_cast<uint32_t>(waiting) >= connectTimeoutSec) {
+                    std::string reason =
+                        "No GuestAgent connection within " + std::to_string(connectTimeoutSec) +
+                        "s. The host listener on port " + std::to_string(boundPort) +
+                        " stayed available for the whole wait.";
+
+                    if (!m_tcpServer->UsedPreferredPort()) {
+                        // The likely cause is knowable, so say it rather than
+                        // leaving the analyst to guess.
+                        reason += " The listener had to move off the configured port " +
+                                  std::to_string(m_vmConfig.hostPort) +
+                                  " because something else holds it. A guest provisioned before "
+                                  "the session handoff existed dials the configured port directly "
+                                  "and cannot follow the move: either free port " +
+                                  std::to_string(m_vmConfig.hostPort) +
+                                  " on the host, or re-run setup_lab.bat inside the guest to "
+                                  "install a startup script that reads " +
+                                  std::string(kGuestSessionFileName) + " from the shared drive.";
+                    } else {
+                        reason += " The guest may still be booting, or its startup script may not "
+                                  "be launching GuestAgent.";
+                    }
+                    emitLocal(EventType::Error, "Network", reason);
+                    break;
+                }
+                continue;   // still booting; the execution budget has not started
+            }
+
+            const auto running = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - connectedTime).count();
+            if (executionTimeoutSec > 0 && static_cast<uint32_t>(running) >= executionTimeoutSec) {
+                emitLocal(EventType::Info, "QemuHost",
+                          "Execution timeout reached (" + std::to_string(executionTimeoutSec) +
+                          "s after the agent connected). Stopping session.");
                 break;
             }
         }
 
-        // Step 5: Terminate QEMU (Automatically purges in-memory delta, base disk remains untouched)
-        emitLocal(EventType::Info, "QEMU", "Stopping QEMU and discarding all sandbox disk modifications...");
+        // Step 5: terminate QEMU. The in-memory -snapshot delta is discarded and
+        // the base disk image is left untouched, so the guest rolls back.
+        if (!qemuDied) {
+            emitLocal(EventType::Info, "QEMU",
+                      "Stopping QEMU and discarding all sandbox disk modifications...");
+        }
         m_qemu->StopQemu();
+
+        emitLocal(EventType::Info, "Network",
+                  "Telemetry summary: " +
+                  std::string(m_tcpServer->EverConnected() ? "agent connected" : "agent never connected") +
+                  ", " + std::to_string(m_tcpServer->BytesReceived()) + " byte(s) on the wire, " +
+                  std::to_string(m_tcpServer->EventsReceived()) + " event(s) decoded, " +
+                  std::to_string(m_tcpServer->FramingErrors()) + " framing resync(s).");
+
+        serverGuard.armed = false;
         m_tcpServer->Stop();
 
         {

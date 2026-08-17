@@ -1,5 +1,6 @@
 #include "core/analysis_orchestrator.h"
 #include "core/dynamic_vm_analyzer.h"
+#include "common/config.h"
 #include "core/xref_analyzer.h"
 #include <chrono>
 #include <ctime>
@@ -220,10 +221,15 @@ namespace Dracula {
         auto res = AnalyzeFile(filePath, opts);
 
         // Orchestrate QEMU Dynamic VM Execution
+        // Take the configured VM and trace settings rather than defaults, so the
+        // port policy, listen address and connect timeout the user set in
+        // config.ini actually reach the sandbox.
         Sandbox::DynamicVMAnalyzer vmAnalyzer;
-        Sandbox::VMConfig vmConfig;
-        Sandbox::TraceOptions traceOpts;
-        traceOpts.executionTimeoutSeconds = timeoutSeconds;
+        Sandbox::VMConfig vmConfig = Sandbox::ConfigManager::Instance().GetVMConfig();
+        Sandbox::TraceOptions traceOpts = Sandbox::ConfigManager::Instance().GetTraceOptions();
+        if (timeoutSeconds > 0) {
+            traceOpts.executionTimeoutSeconds = timeoutSeconds;
+        }
 
         if (vmAnalyzer.Initialize(vmConfig, traceOpts)) {
             vmAnalyzer.RunAnalysis(filePath);

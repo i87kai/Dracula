@@ -20,16 +20,37 @@ namespace Sandbox {
         uint32_t maxInstructions = 10000;      // Max emulation instructions
     };
 
-    // VirtualBox environment and VM configuration
+    // How the host telemetry listener chooses its TCP port.
+    // Defined here rather than in port_allocator.h so VMConfig stays usable by
+    // translation units that never touch a socket.
+    enum class PortStrategy {
+        Fixed,              // Use exactly the preferred port, or fail.
+        PreferredThenRange, // Try the preferred port, then scan the range.
+        Ephemeral           // Let the OS assign any free port.
+    };
+
+    // Sandbox environment and VM configuration
     struct VMConfig {
-        std::string vmName         = "WinLab";         // VirtualBox VM Name
+        std::string vmName         = "WinLab";         // VM Name
         std::string snapshotName   = "Clean_State";    // Clean snapshot name
         std::string guestUsername  = "user";           // Guest OS username
         std::string guestPassword  = "123456";         // Guest OS password
         std::string guestTargetDir = "C:\\Sandbox\\";  // Guest path to deploy and run the binary
         std::string hostListenIp   = "0.0.0.0";        // Host TCP listening IP
-        uint16_t hostPort          = 8899;             // Host TCP listening port
+        uint16_t hostPort          = 8899;             // Preferred host TCP listening port
         bool headlessMode          = false;            // Run VM in headless mode
+
+        // Port allocation policy. The default prefers the configured port so an
+        // already-provisioned guest keeps working, and only moves when that port
+        // is genuinely taken.
+        PortStrategy portStrategy  = PortStrategy::PreferredThenRange;
+        uint16_t portRangeBegin    = 8899;
+        uint16_t portRangeEnd      = 8999;
+
+        // How long to wait for the GuestAgent to dial in before reporting that
+        // it never connected. Separate from the execution timeout, because a
+        // guest that never connects is a different failure from one that ran.
+        uint32_t guestConnectTimeoutSeconds = 240;
     };
 
     // Categorized event types emitted during runtime tracing

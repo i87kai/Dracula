@@ -1,4 +1,47 @@
 ============================================================
+Dracula v1.1.1
+Release: 2026-08-17
+============================================================
+
+Fixed
+-----
+- Fixed the QEMU sandbox never starting. Dracula bound host port 8899 for its telemetry listener and then asked QEMU to forward the same host port inbound with "hostfwd=tcp::8899-:8899". QEMU could not bind a port Dracula already held, printed "Could not set up host forwarding rule" and exited about a second after launch, so the guest never booted and no dynamic analysis was ever possible.
+- The forwarding rule was never needed. The telemetry link is outbound only: the host listens, and the GuestAgent dials out through the QEMU SLIRP gateway alias 10.0.2.2, which user-mode networking provides without any port forwarding. The inbound rule existed only to contend with the listener. It has been removed rather than moved to a different hard-coded port.
+- Fixed telemetry from the guest being silently discarded. The deployed GuestAgent emits the original pipe-delimited text payload ("type|timestamp|category|message|details") while the host had moved to a length-prefixed binary payload. The packet framing is identical in both, so events arrived perfectly framed and then failed to decode: 2317 bytes on the wire, zero events. The host now detects and accepts both encodings, so a guest image provisioned before the format changed keeps working without being re-provisioned.
+- Fixed legacy event type numbers being misinterpreted. The deployed agent numbers event types sequentially, from before the enum gained explicit values (Process = 38, File = 40, ...). A legacy "4" means the target exited but mapped to nothing in the current enum, so a finished sample was invisible and every session ran until it timed out instead of ending when the sample did. Legacy numbers are now mapped onto the current enum, and a session ends as soon as the target exits (34s instead of 94s in a measured run).
+- Fixed guest telemetry never becoming findings. ThreatEvaluator::NormalizeSandboxEvents matched only the umbrella event values (Process, File, Registry, Network) while the guest emits the specific ones (ProcessCreated, FileModified, RegistryValueSet, NetworkConnect), so real telemetry produced no findings at all. Both are now accepted.
+- Fixed the process id and process name never being transmitted. SerializeEventBinary wrote neither, so every event reached the host with pid 0 and an empty process name, which made the sandbox process tree unattributable. They are appended to the payload and read as optional trailing fields, so an older agent that does not send them still deserializes instead of having all of its events rejected.
+- Fixed a shutdown deadlock in the telemetry listener. The worker thread blocked in recv() on a connected client, and Stop() closed only the listening socket before joining, so a guest that connected and then went quiet hung Dracula on exit. Reads are now polled with a timeout and the client socket is closed from the caller's thread; Stop() returns in milliseconds with an idle client attached.
+- Fixed a launch failure being reported as success. StartQemu returned true whenever CreateProcess succeeded, even when QEMU rejected its arguments and exited immediately afterwards, which is exactly what the port conflict did. QEMU's stderr is now captured, the process is verified alive after a settle window, and a refused configuration is reported with QEMU's own message.
+- Fixed the sandbox ignoring configuration. RunDynamicSandbox built default VMConfig and TraceOptions rather than reading the configured ones, so the listen address, port policy and timeouts set in config.ini never reached the sandbox.
+
+Added
+-----
+- Collision-safe port allocation (host/port_allocator). Ports are claimed by an actual bind and the live socket is handed to the caller, so there is no check-then-bind window for another process to slip through, and the caller always learns the port that was ACTUALLY bound rather than the one requested. Sockets are released on every failure path.
+- Three configurable port strategies: "fixed" (use the configured port or fail), "preferred-then-range" (try the configured port, then scan a range, then fall back to an OS-assigned port) and "ephemeral" (let the OS choose). The default prefers the configured port, so an already-provisioned guest keeps working and Dracula only moves when the port is genuinely taken.
+- SO_EXCLUSIVEADDRUSE on the listening socket, replacing SO_REUSEADDR. On Windows SO_REUSEADDR lets a second socket bind an address another socket is already using, which is precisely the collision the allocator exists to detect; exclusive use turns a conflict into an honest, reportable failure instead of a silent double bind.
+- Guest session handoff (host/guest_session_handoff). The host writes dracula_session.ini into the shared folder before QEMU starts, carrying the host address, the port that was actually bound, the session id and the timeout. QEMU snapshots the share into a read-only FAT drive at launch, so writing it beforehand is the only ordering that works.
+- GuestAgent reads the handoff from the shared drive when no --host-port argument is supplied, and an explicit argument still wins, so a guest provisioned with a fixed port is unaffected.
+- guest_share/auto_exec.bat now reads the handoff and passes the port through, falling back to the historical default when no handoff is present.
+- Separate connect and execution budgets. The connect budget covers guest boot and auto-login and runs from launch; the execution budget covers the sample and only starts once the agent is on the line. Sharing one budget meant a 60 second execution limit silently capping a four minute boot.
+- Telemetry diagnostics: bytes on the wire, events decoded and framing resynchronisations are counted and reported, which is what separates "the agent sent nothing" from "the agent sent something the host could not decode". These are very different faults and used to look identical.
+- Actionable diagnosis when the agent never connects. If the listener had to move off the configured port, the message says so and explains that a guest provisioned before the handoff existed dials the configured port directly and cannot follow the move.
+- QemuManager::BuildCommandLine, so the launch arguments can be asserted on without booting a guest.
+- tests/test_sandbox_network.cpp: 98 checks covering port availability and allocation, conflict fallback across all three strategies, exhausted ranges, listener lifecycle and socket release, prompt shutdown with an idle client, protocol framing across split reads, both payload encodings, legacy event type mapping, the session handoff, the QEMU command line, and network configuration.
+
+Verified
+--------
+- Clean Release build (GCC 16.1.0 MinGW-w64, CMake 4.3.3, Release) with no warnings or errors in project-owned code.
+- Full suite: 226 terminal UI, 198 anti-evasion, 112 analysis core, 98 sandbox networking, test_emulate_buffer. 634 checks, 0 failures. CTest 5/5.
+- REAL QEMU GUEST RUN, end to end: QEMU launched and stayed up, the Windows guest booted, GuestAgent connected after 32s on port 8899, 2317 bytes and 34 telemetry events were received and decoded with 0 framing errors, the target process was tracked from spawn (PID 4832) to exit (code 0), the session ended when the sample finished, QEMU was terminated, the base disk image was left byte for byte unchanged, and the port was released. No port conflict occurred.
+- The received telemetry is the environment probe's full output read from inside the guest, including HYPERVISOR_BIT=1, HYPERVISOR_VENDOR=Microsoft Hv, FIRMWARE_MARKER=QEMU, API_PROCESSOR_COUNT=2 and SLEEP_TICKCOUNT_MS=531 against SLEEP_QPC_MS=529, which independently confirms the sandbox environment fingerprint reported by the anti-evasion engine.
+- Port conflict scenario, with another process holding 8899 during a real QEMU run: the listener moved to 8900, wrote 8900 into the handoff, and QEMU launched normally instead of exiting. The guest did not follow the move, because the image was provisioned with a startup script that dials 8899 directly; Dracula reports exactly that and names the two ways to resolve it.
+
+Known limitations
+-----------------
+- A guest image provisioned before this release runs a startup script and a GuestAgent that predate the session handoff, so it always dials the configured port. It works normally while that port is free, which the default policy ensures wherever possible, but it cannot follow a fallback port until setup_lab.bat is re-run inside the guest from the updated share.
+
+============================================================
 Dracula v1.1.0
 Release: 2026-08-17
 ============================================================

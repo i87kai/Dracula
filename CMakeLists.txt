@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.1.0 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.1.1 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-17")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
@@ -82,6 +82,8 @@ set(DRACULA_CORE_SOURCES
     src/core/c_api.cpp
     src/host/sandbox_fingerprint.cpp
     src/host/qemu_manager.cpp
+    src/host/port_allocator.cpp
+    src/host/guest_session_handoff.cpp
     src/host/live_tcp_server.cpp
     src/host/report_writer.cpp
     src/host/console_ui.cpp
@@ -142,6 +144,7 @@ set(GUEST_SOURCES
     src/guest/process_spawner.cpp
     src/guest/system_tracer.cpp
     src/guest/tcp_emitter.cpp
+    src/host/guest_session_handoff.cpp
 )
 add_executable(GuestAgent ${GUEST_SOURCES})
 if(WIN32)
@@ -231,4 +234,9 @@ if(BUILD_TESTS)
         DRACULA_AE_SAMPLE_DIR="${DRACULA_AE_SAMPLE_DIR}")
     add_dependencies(test_anti_evasion AntiEvasionSamples)
     add_test(NAME AntiEvasion COMMAND test_anti_evasion)
+
+    # 5. Sandbox networking: port allocation, conflict handling, handoff, framing
+    add_executable(test_sandbox_network tests/test_sandbox_network.cpp)
+    target_link_libraries(test_sandbox_network PRIVATE DraculaCore)
+    add_test(NAME SandboxNetwork COMMAND test_sandbox_network)
 endif()
