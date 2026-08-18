@@ -459,6 +459,14 @@ namespace Dracula {
         m_active = false;
     }
 
+    void InteractiveScreen::RefreshContext() {
+        ++m_info.tipIndex;
+        m_info.RefreshContext();
+        // The header's height can change when the context does, so the cached
+        // rows must be rebuilt rather than reused.
+        Invalidate();
+    }
+
     void InteractiveScreen::SetHeaderInfo(const StartupInfo& info) {
         m_info = info;
         m_cachedHeaderWidth = -1;

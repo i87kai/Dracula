@@ -28,13 +28,36 @@ namespace Dracula {
         std::string buildTarget;
         std::string architecture;
         std::string buildMode;
-        std::vector<std::string> engines;
         std::string workingDirectory;
+
+        // Engine inventory. Kept for /about and diagnostics, but deliberately
+        // NOT shown in the persistent header: "Capstone 5 - Unicorn 2 - Safe PE"
+        // is implementation detail that told the user nothing about their work
+        // and crowded out what did (section 24).
+        std::vector<std::string> engines;
+
+        // What the header actually shows: the state of the current work.
+        // Empty strings are omitted rather than rendered as placeholders.
+        std::string projectName;
+        std::string targetSummary;   // "Native DLL - x64"
+        std::string runtimeState;    // "Idle", "PID 17140"
+        std::string sandboxState;    // "Available", "Stopped"
+        std::string statusText;      // "Ready"
+
+        // Contextual tips. `tipIndex` selects which one is shown; the shell
+        // advances it once per executed command. Rotating inside the renderer
+        // would change the tip on every keystroke and make a repaint
+        // non-deterministic.
         std::vector<std::string> tips;
+        size_t tipIndex = 0;
 
         // Populate from the compiled-in version constants and the process
         // environment.
         static StartupInfo Detect();
+
+        // Refresh projectName / targetSummary / runtimeState / statusText and
+        // choose tips appropriate to the current context.
+        void RefreshContext();
     };
 
     // How much vertical space the persistent header claims. Standard is the

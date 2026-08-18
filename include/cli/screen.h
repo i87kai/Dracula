@@ -186,6 +186,11 @@ namespace Dracula {
         OutputBuffer& Output() { return m_output; }
 
         void SetHeaderInfo(const StartupInfo& info);
+
+        // Re-reads the active project into the header and advances the tip
+        // rotation. Called once per executed command so the header tracks the
+        // work and the tip changes at a readable pace.
+        void RefreshContext();
         void SetStatusLine(const std::string& status);
 
         // Read one command line. Returns false on EOF (Ctrl+D on an empty line).

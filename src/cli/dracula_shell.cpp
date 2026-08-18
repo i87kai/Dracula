@@ -362,6 +362,10 @@ namespace Dracula {
                 screen.Output().AppendLine(prompt + C(ColorRole::Text) + line + R());
 
                 RunCommandLine(line);
+
+                // The project may have changed (opened, closed, attached), so
+                // the header is re-derived from it after every command.
+                screen.RefreshContext();
                 screen.Output().ScrollToBottom();
             }
 

@@ -4,6 +4,7 @@
 #include "cli/terminal.h"
 #include "common/version.h"
 #include "common/paths.h"
+#include "app/project_manager.h"
 
 #include <algorithm>
 
@@ -66,13 +67,35 @@ namespace Dracula {
             return row;
         }
 
-        std::string EngineRow(const StartupInfo& info, size_t width) {
-            std::string joined;
-            for (size_t i = 0; i < info.engines.size(); ++i) {
-                if (i) joined += Sep();
-                joined += info.engines[i];
+        // The row that replaced the engine inventory: what is loaded, what
+        // state it is in. When nothing is open it invites the user to open
+        // something rather than listing libraries at them.
+        std::string ContextRow(const StartupInfo& info, size_t width) {
+            std::vector<std::pair<std::string, std::string>> fields;
+            if (!info.projectName.empty())   fields.emplace_back("Project", info.projectName);
+            if (!info.targetSummary.empty()) fields.emplace_back("Target", info.targetSummary);
+            if (!info.runtimeState.empty())  fields.emplace_back("Runtime", info.runtimeState);
+            if (!info.sandboxState.empty())  fields.emplace_back("Sandbox", info.sandboxState);
+            if (!info.statusText.empty())    fields.emplace_back("Status", info.statusText);
+
+            if (fields.empty()) {
+                return Muted() + Text::Truncate("No project open", width) + Reset();
             }
-            return Tech() + Text::Truncate(joined, width) + Reset();
+
+            std::string joined;
+            for (size_t i = 0; i < fields.size(); ++i) {
+                if (i) joined += Muted() + Sep() + Reset();
+                joined += Muted() + fields[i].first + " " + Reset() + Tech() + fields[i].second + Reset();
+            }
+            return Text::Truncate(joined, width);
+        }
+
+        // The currently selected tip. Selection is stable for a given
+        // StartupInfo, so repainting the same state paints the same rows.
+        std::string TipRow(const StartupInfo& info, size_t width) {
+            if (info.tips.empty()) return "";
+            const std::string& tip = info.tips[info.tipIndex % info.tips.size()];
+            return Muted() + Text::Truncate("Tip: " + tip, width) + Reset();
         }
 
         // The full-bleed rule that closes the header region.
@@ -92,16 +115,68 @@ namespace Dracula {
         info.buildTarget  = Version::BuildTarget;
         info.architecture = "x64";
         info.buildMode    = "Release";
+        // Retained for /about and diagnostics only; the header no longer
+        // renders this (section 24).
         info.engines      = {
             "Capstone 5", "Unicorn 2", "Safe PE",
             "CFG / XRefs", "Win32 HLE", "MCP Server"
         };
         info.workingDirectory = Paths::CurrentWorkingDir();
-        info.tips = {
-            "Type / to browse commands, Tab to accept the selection",
-            "Start with /analyze <file>, then /headers, /strings or /cfg reuse it"
-        };
+        info.RefreshContext();
         return info;
+    }
+
+    void StartupInfo::RefreshContext() {
+        projectName.clear();
+        targetSummary.clear();
+        runtimeState.clear();
+        statusText.clear();
+        tips.clear();
+        // tipIndex is deliberately preserved across refreshes: it belongs to
+        // the session, not to the context being described.
+
+        // QEMU stays lazy, so the sandbox is reported as available rather than
+        // running unless something actually started it (section 27).
+        sandboxState = "Available";
+
+        auto project = App::ProjectManager::Instance().Active();
+
+        if (!project) {
+            statusText = "Idle";
+            tips = {
+                "Type / to browse commands.",
+                "/target <file> creates a durable project for a sample.",
+                "/process attach <pid> analyzes a running process.",
+                "/project list shows every project you have created.",
+            };
+            return;
+        }
+
+        const auto& target = project->Target();
+        projectName = project->DisplayName();
+        targetSummary = std::string(UTR::TargetKindToString(target.kind)) +
+                        (target.architecture.empty() ? "" : (" - " + target.architecture));
+
+        if (target.IsLiveProcess()) {
+            runtimeState = "PID " + std::to_string(target.pid);
+            tips = {
+                "/memory snapshot before records the current memory state.",
+                "/dll <name> correlates a loaded module with its on-disk image.",
+                "/process modules lists what is loaded in the target.",
+                "Large tables are written to HTML reports inside the project.",
+                "/memory compare before after diffs two snapshots.",
+            };
+        } else {
+            runtimeState = "Idle";
+            tips = {
+                "/static sections shows the section table with entropy.",
+                "/project storage shows exactly what this project is using.",
+                "/session cleanup removes disposable data without deleting the project.",
+                "Large tables are written to HTML reports inside the project.",
+            };
+        }
+
+        statusText = "Ready";
     }
 
     HeaderVariant StartupCard::SelectVariant(int terminalWidth) {
@@ -143,8 +218,8 @@ namespace Dracula {
             case HeaderVariant::Standard: {
                 std::vector<std::string> text = {
                     Text::Truncate(IdentityRow(info), textWidth),
-                    EngineRow(info, textWidth),
-                    Muted() + ShortenPath(info.workingDirectory, textWidth) + Reset()
+                    ContextRow(info, textWidth),
+                    TipRow(info, textWidth)
                 };
 
                 auto art = Art::Colorize(Art::Vampire());
@@ -168,7 +243,7 @@ namespace Dracula {
                 const size_t textW = usable > kIndent ? usable - kIndent : usable;
                 rows.push_back("");
                 rows.push_back(Indent(Text::Truncate(IdentityRow(info), textW)));
-                rows.push_back(Indent(EngineRow(info, textW)));
+                rows.push_back(Indent(ContextRow(info, textW)));
                 break;
             }
 

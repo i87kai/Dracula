@@ -218,6 +218,44 @@ namespace Dracula {
             m_buffer.find(' ') == std::string::npos;
 
         if (!firstTokenSlash) {
+            // Hierarchical palette (section 14): once the command name is
+            // settled, the palette switches to that command's subcommands so
+            // "/memory " immediately shows map / read / snapshot / compare.
+            // The list comes from CommandRegistry, so it cannot advertise
+            // anything dispatch would reject.
+            if (!m_buffer.empty() && m_buffer.front() == '/') {
+                std::istringstream ss(m_buffer);
+                std::string cmdToken;
+                ss >> cmdToken;
+
+                std::string cmdName = cmdToken.substr(1);
+                const auto* def = CommandRegistry::Instance().Find(cmdName);
+
+                if (def && !def->subcommands.empty()) {
+                    // Only while the FIRST argument is being typed; later
+                    // tokens are operands, not subcommands.
+                    const std::string rest = m_buffer.substr(cmdToken.size());
+                    const size_t firstNonSpace = rest.find_first_not_of(' ');
+                    const std::string typed =
+                        (firstNonSpace == std::string::npos) ? "" : rest.substr(firstNonSpace);
+
+                    if (typed.find(' ') == std::string::npos) {
+                        std::vector<Suggestion> items;
+                        for (const auto& sub : def->subcommands) {
+                            if (typed.empty() || sub.name.rfind(typed, 0) == 0) {
+                                items.push_back({sub.name, sub.name, sub.description, def->name});
+                            }
+                        }
+                        if (!items.empty()) {
+                            const size_t previous = m_selection;
+                            SetSuggestions(SuggestionKind::Argument, std::move(items));
+                            if (previous < m_suggestions.size()) m_selection = previous;
+                            return;
+                        }
+                    }
+                }
+            }
+
             // Editing arguments invalidates a command palette, but an argument
             // or path popup stays valid until the token changes; it is rebuilt
             // explicitly on Tab.
@@ -393,7 +431,20 @@ namespace Dracula {
             }
         }
 
-        // 2. Positional value suggestions declared by the command.
+        // 2. Subcommands, when the first argument is the one being completed.
+        // Taking these from the registry (rather than from argCompletions)
+        // means Tab offers the same list the palette shows and dispatch
+        // accepts, with the descriptions attached.
+        if (!def->subcommands.empty() && before.size() <= 1) {
+            for (const auto& sub : def->subcommands) {
+                if (partial.empty() || sub.name.rfind(partial, 0) == 0) {
+                    out.push_back({sub.name, sub.name, sub.description, def->name});
+                }
+            }
+            if (!out.empty()) return out;
+        }
+
+        // 3. Positional value suggestions declared by the command.
         for (const auto& v : def->argCompletions) {
             if (partial.empty() || v.rfind(partial, 0) == 0) {
                 out.push_back({v, v, "", "Values"});
