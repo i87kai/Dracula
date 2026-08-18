@@ -98,34 +98,55 @@ try {
     ) | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $httpRoot 'releases.json') -Encoding UTF8
     $serverJob = Start-Job -ArgumentList $httpRoot, $port -ScriptBlock {
         param($Root, $Port)
-        $listener = [Net.HttpListener]::new()
-        $listener.Prefixes.Add("http://127.0.0.1:$Port/")
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
         $listener.Start()
         try {
             $done = $false
             while (-not $done) {
-                $context = $listener.GetContext()
-                $name = $context.Request.Url.AbsolutePath.TrimStart('/')
-                $path = Join-Path $Root $name
-                if (Test-Path -LiteralPath $path -PathType Leaf) {
-                    $bytes = [IO.File]::ReadAllBytes($path)
-                    $context.Response.StatusCode = 200
-                    if ($name.EndsWith('.json', [StringComparison]::OrdinalIgnoreCase)) {
-                        $context.Response.ContentType = 'application/json; charset=utf-8'
+                $client = $listener.AcceptTcpClient()
+                try {
+                    $stream = $client.GetStream()
+                    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
+                    $requestLine = $reader.ReadLine()
+                    while ($reader.ReadLine()) { }
+                    $requestTarget = ($requestLine -split ' ')[1]
+                    $name = [Uri]::UnescapeDataString(($requestTarget -split '\?')[0].TrimStart('/'))
+                    $path = Join-Path $Root $name
+                    if (Test-Path -LiteralPath $path -PathType Leaf) {
+                        $bytes = [IO.File]::ReadAllBytes($path)
+                        $statusLine = 'HTTP/1.1 200 OK'
+                        $contentType = if ($name.EndsWith('.json', [StringComparison]::OrdinalIgnoreCase)) {
+                            'application/json; charset=utf-8'
+                        } else {
+                            'application/octet-stream'
+                        }
                     } else {
-                        $context.Response.ContentType = 'application/octet-stream'
+                        $bytes = [byte[]]::new(0)
+                        $statusLine = 'HTTP/1.1 404 Not Found'
+                        $contentType = 'text/plain'
                     }
-                    $context.Response.ContentLength64 = $bytes.Length
-                    $context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
-                } else {
-                    $context.Response.StatusCode = 404
+                    $header = "$statusLine`r`nContent-Type: $contentType`r`nContent-Length: $($bytes.Length)`r`nConnection: close`r`n`r`n"
+                    $headerBytes = [Text.Encoding]::ASCII.GetBytes($header)
+                    $stream.Write($headerBytes, 0, $headerBytes.Length)
+                    if ($bytes.Length -gt 0) { $stream.Write($bytes, 0, $bytes.Length) }
+                    $stream.Flush()
+                    if ($name.EndsWith('.sha256', [StringComparison]::OrdinalIgnoreCase)) { $done = $true }
+                } finally {
+                    $client.Close()
                 }
-                $context.Response.OutputStream.Close()
-                if ($name.EndsWith('.sha256', [StringComparison]::OrdinalIgnoreCase)) { $done = $true }
             }
-        } finally { $listener.Stop(); $listener.Close() }
+        } finally { $listener.Stop() }
     }
-    Start-Sleep -Milliseconds 300
+    $serverReady = $false
+    for ($attempt = 0; $attempt -lt 50 -and -not $serverReady; $attempt++) {
+        try {
+            $probe = Invoke-WebRequest -Uri "$baseUrl/releases.json" -UseBasicParsing -TimeoutSec 1
+            $serverReady = ($probe.StatusCode -eq 200)
+        } catch {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    Assert-True $serverReady 'local release fixture is ready before updater download'
     $child = Invoke-ChildPowerShell @('-File', $updateScript, '-InstallRoot', $installRoot, '-ReleaseMetadataPath', (Join-Path $httpRoot 'releases.json'), '-NoRestart', '-Quiet')
     Assert-True ($child.ExitCode -ne 0 -and $child.Output -match 'SHA-256 verification failed') 'updater rejects a downloaded package with the wrong SHA-256'
     $version = (& (Join-Path $installRoot 'bin\drac.exe') --version 2>&1 | Out-String)
