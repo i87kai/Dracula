@@ -324,6 +324,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_command_registry PRIVATE DraculaCore)
     add_test(NAME CommandRegistry COMMAND test_command_registry)
 
+    # 10d. Command Regression Suite (section 41: PID is never a path)
+    add_executable(test_command_regressions tests/test_command_regressions.cpp)
+    target_link_libraries(test_command_regressions PRIVATE DraculaCore)
+    add_test(NAME CommandRegressions COMMAND test_command_regressions)
+
     # 11. ManagedHost .NET 10 Out-of-Process Backend Suite
     add_executable(test_managed_backend tests/test_managed_backend.cpp)
     target_link_libraries(test_managed_backend PRIVATE DraculaCore)

@@ -282,11 +282,25 @@ namespace Dracula {
     }
 
     std::string DraculaShell::ResolveTargetFile(const std::vector<std::string>& args, size_t index) {
-        if (args.size() > index && !args[index].empty() && args[index].rfind("--", 0) != 0) {
+        // An explicit path always wins, but a flag never becomes one: without
+        // this guard "--pid 17140" was accepted as a filename, which is how
+        // "file does not exist: --pid 17140" reached the user.
+        if (args.size() > index && !args[index].empty() && args[index].rfind("-", 0) != 0) {
             std::string path = args[index];
             StripQuotes(path);
             return path;
         }
+
+        // Otherwise the subject comes from the ACTIVE PROJECT, not from legacy
+        // shell state. For a process-backed project this resolves to the
+        // backing executable, so every file-oriented command keeps working
+        // after /process attach without the user reopening anything.
+        auto project = App::ProjectManager::Instance().Active();
+        if (project) {
+            const std::string path = project->StaticAnalysisPath();
+            if (!path.empty()) return path;
+        }
+
         return m_activeFile;
     }
 
@@ -296,6 +310,25 @@ namespace Dracula {
     }
 
     std::string DraculaShell::SessionStatusLine() const {
+        // The status strip describes the project, which is the authoritative
+        // answer to "what am I working on".
+        auto project = App::ProjectManager::Instance().Active();
+        if (project) {
+            const auto& target = project->Target();
+            std::string line = "project: " + project->DisplayName();
+            if (target.IsLiveProcess()) {
+                line += "   pid " + std::to_string(target.pid);
+            }
+            if (!target.architecture.empty()) {
+                line += "   " + target.architecture;
+            }
+            const size_t snapshots = project->Snapshots().size();
+            if (snapshots > 0) {
+                line += "   snapshots " + std::to_string(snapshots);
+            }
+            return line;
+        }
+
         if (m_activeFile.empty()) return "";
 
         std::string name;
