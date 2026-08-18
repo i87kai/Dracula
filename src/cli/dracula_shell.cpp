@@ -2,9 +2,11 @@
 #include "cli/terminal.h"
 #include "cli/text_layout.h"
 #include "cli/startup_card.h"
+#include "cli/startup_picker.h"
 #include "cli/ui.h"
 #include "app/services.h"
 #include "app/settings.h"
+#include "app/sandbox_service.h"
 #include "common/version.h"
 #include "common/paths.h"
 #include "common/input_validator.h"
@@ -1978,6 +1980,73 @@ namespace Dracula {
 
     // ─── Entry point ────────────────────────────────────────────────────────
 
+    // Presents the startup picker and turns the answer into an open project.
+    // Anything the user cannot complete here (a cancelled prompt, a path that
+    // does not exist) simply lands them at the command prompt with an
+    // explanation, never in a broken state.
+    void DraculaShell::RunStartupPicker() {
+        auto choice = StartupPicker::Present();
+
+        switch (choice.choice) {
+            case StartupPicker::Choice::OpenFile: {
+                Ui::Note("Enter the path to an EXE, DLL, SYS or .NET assembly.");
+                std::string path;
+                if (!m_editor.ReadLine("  file > ", path) || path.empty()) return;
+                StripQuotes(path);
+                RenderResult(App::ProjectService::Instance().OpenFile(path));
+                return;
+            }
+
+            case StartupPicker::Choice::AttachProcess: {
+                RenderResult(App::ProcessService::Instance().List());
+                Ui::Note("Enter the PID to attach to.");
+                std::string pidText;
+                if (!m_editor.ReadLine("  pid > ", pidText) || pidText.empty()) return;
+
+                uint32_t pid = 0;
+                try {
+                    pid = static_cast<uint32_t>(std::stoul(pidText));
+                } catch (...) {
+                    Ui::Error("'" + pidText + "' is not a valid PID.");
+                    return;
+                }
+                RenderResult(App::ProjectService::Instance().AttachProcess(pid));
+                return;
+            }
+
+            case StartupPicker::Choice::OpenProject: {
+                RenderResult(App::ProjectService::Instance().List());
+                Ui::Note("Enter a project id or name to open.");
+                std::string id;
+                if (!m_editor.ReadLine("  project > ", id) || id.empty()) return;
+                RenderResult(App::ProjectService::Instance().Open(id));
+                return;
+            }
+
+            case StartupPicker::Choice::OpenDriver: {
+                Ui::Note("Enter the path to a .sys driver.");
+                std::string path;
+                if (!m_editor.ReadLine("  driver > ", path) || path.empty()) return;
+                StripQuotes(path);
+                RenderResult(App::ProjectService::Instance().OpenFile(path));
+                return;
+            }
+
+            case StartupPicker::Choice::OpenVmImage: {
+                // The VM path is about sandbox infrastructure, not a sample, so
+                // it points the user at the sandbox commands rather than
+                // creating an analysis project.
+                RenderResult(App::SandboxService::Instance().Status());
+                Ui::Note("Import your local VM image with /sandbox image import <path>.");
+                return;
+            }
+
+            case StartupPicker::Choice::SkipToShell:
+            default:
+                return;
+        }
+    }
+
     int DraculaShell::ProcessArgs(int argc, char* argv[]) {
         // MCP stdio mode must be completely clean: no terminal initialization,
         // no colours, no artwork, nothing but JSON-RPC on stdout.
@@ -2003,6 +2072,10 @@ namespace Dracula {
         }
 
         if (argc <= 1) {
+            // Section 4: `drac` with no arguments asks what to analyze rather
+            // than dropping the user at an empty prompt. Escape, a redirected
+            // stdin, or a choice that needs no follow-up all end at the shell.
+            RunStartupPicker();
             return RunInteractive();
         }
 

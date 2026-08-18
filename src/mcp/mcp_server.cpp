@@ -8,6 +8,8 @@
 #include "common/version.h"
 #include "common/paths.h"
 #include "utr/target_manager.h"
+#include "app/services.h"
+#include "app/project_manager.h"
 #include "utr/analysis_orchestrator.h"
 #include "utr/session_manager.h"
 #include "utr/artifact_manager.h"
@@ -112,7 +114,14 @@ namespace Dracula {
         if (method == "tools/list") {
             return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"tools\":["
                    // ─── Target & Session Tools ───
-                   "{\"name\":\"target_open\",\"description\":\"Open and fingerprint target (EXE, DLL, PID, Service, .NET, Driver, VM).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"description\":\"File path, --pid <pid>, or --service <name>\"}},\"required\":[\"target\"]}},"
+                   "{\"name\":\"target_open\",\"description\":\"Open a target, creating or continuing its durable project. Give either a file path or a numeric pid.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"description\":\"Path to an EXE, DLL, SYS or .NET assembly\"},\"pid\":{\"type\":\"integer\",\"description\":\"PID of a running process to attach to\"}}}},"
+                   "{\"name\":\"project_list\",\"description\":\"List durable analysis projects.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                   "{\"name\":\"project_info\",\"description\":\"Describe the active project and its target.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                   "{\"name\":\"project_open\",\"description\":\"Open a project by id or name.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"}},\"required\":[\"project\"]}},"
+                   "{\"name\":\"project_storage\",\"description\":\"Measured disk usage of the active project.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                   "{\"name\":\"runtime_status\",\"description\":\"Truthful runtime backend readiness.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                   "{\"name\":\"runtime_events\",\"description\":\"Runtime events recorded for the active project.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                   "{\"name\":\"artifacts_list\",\"description\":\"Artifacts generated inside the active project.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                    "{\"name\":\"target_close\",\"description\":\"Close active target session.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                    "{\"name\":\"target_info\",\"description\":\"Get metadata and active backend for the loaded target.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                    "{\"name\":\"target_capabilities\",\"description\":\"Get capability matrix for the loaded target.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
@@ -181,29 +190,119 @@ namespace Dracula {
         if (method == "tools/call") {
             std::string toolName = ExtractJsonField(requestJson, "name");
 
+            // Every tool below resolves its subject through the ACTIVE PROJECT,
+            // exactly as the CLI does. MCP does not keep a parallel target
+            // model, and it never re-parses a "path-or-pid" string (section 38).
+            auto ResolveProjectTarget = [&]() -> std::shared_ptr<UTR::ITarget> {
+                auto bound = App::TargetBinding::Instance().Resolve();
+                return bound.Ok() ? bound.Value() : nullptr;
+            };
+
+            // Renders a CommandResult as MCP text content. Responses stay
+            // bounded; detailed output is referenced as a project artifact
+            // rather than inlined.
+            auto RenderCommandResult = [&](const App::CommandResult& result) -> std::string {
+                std::ostringstream text;
+                if (!result.ok) {
+                    text << result.error.message;
+                    if (!result.error.reason.empty()) text << "\n" << result.error.reason;
+                    if (!result.error.remediation.empty()) text << "\n" << result.error.remediation;
+                    if (!result.error.availableInstead.empty()) {
+                        text << "\nAvailable for this target:";
+                        for (const auto& capability : result.error.availableInstead) {
+                            text << "\n  " << capability;
+                        }
+                    }
+                    return "{\"jsonrpc\":\"2.0\",\"id\":" + id +
+                           ",\"error\":{\"code\":-32001,\"message\":\"" +
+                           EscapeForJson(text.str()) + "\"}}";
+                }
+
+                text << result.summary;
+                for (const auto& line : result.lines) text << "\n" << line;
+                for (const auto& evidence : result.evidence) {
+                    text << "\n[" << evidence.level << "] " << evidence.summary;
+                }
+                for (const auto& artifact : result.artifacts) {
+                    text << "\nArtifact: " << artifact.projectRelative
+                         << " (" << artifact.kind << ", " << artifact.rowCount << " rows)";
+                }
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id +
+                       ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" +
+                       EscapeForJson(text.str()) + "\"}]}}";
+            };
+
+            // ─── Project Tools (section 38) ──────────────────────────────────────
+            if (toolName == "project_list") {
+                return RenderCommandResult(App::ProjectService::Instance().List());
+            }
+            if (toolName == "project_info") {
+                return RenderCommandResult(App::ProjectService::Instance().Info());
+            }
+            if (toolName == "project_open") {
+                const std::string projectId = ExtractJsonField(requestJson, "project");
+                if (projectId.empty()) {
+                    return "{\"jsonrpc\":\"2.0\",\"id\":" + id +
+                           ",\"error\":{\"code\":-32602,\"message\":\"Missing 'project' argument\"}}";
+                }
+                return RenderCommandResult(App::ProjectService::Instance().Open(projectId));
+            }
+            if (toolName == "project_storage") {
+                return RenderCommandResult(App::ProjectService::Instance().Storage());
+            }
+            if (toolName == "runtime_events") {
+                return RenderCommandResult(App::RuntimeService::Instance().Events());
+            }
+            if (toolName == "runtime_status") {
+                return RenderCommandResult(App::RuntimeService::Instance().Status());
+            }
+            if (toolName == "artifacts_list") {
+                auto project = App::ProjectManager::Instance().Active();
+                if (!project) {
+                    return RenderCommandResult(
+                        App::CommandResult::Failure(App::NoActiveProjectError()));
+                }
+                auto listing = App::CommandResult::Success(
+                    std::to_string(project->Artifacts().size()) + " artifact(s).");
+                for (const auto& artifact : project->Artifacts()) {
+                    listing.Line(artifact.kind + "  " + artifact.relativePath +
+                                 "  " + std::to_string(artifact.rowCount) + " rows");
+                }
+                return RenderCommandResult(listing);
+            }
+
             // ─── Target & Session Tools ──────────────────────────────────────────
             if (toolName == "target_open") {
+                // A PID arrives as a NUMBER in its own field. There is no
+                // "path or --pid string" to disambiguate, so the old class of
+                // bug is unrepresentable through this interface.
+                const std::string pidField = ExtractJsonField(requestJson, "pid");
+                if (!pidField.empty()) {
+                    uint32_t pid = 0;
+                    try {
+                        pid = static_cast<uint32_t>(std::stoul(pidField));
+                    } catch (...) {
+                        return "{\"jsonrpc\":\"2.0\",\"id\":" + id +
+                               ",\"error\":{\"code\":-32602,\"message\":\"'pid' must be a number\"}}";
+                    }
+                    return RenderCommandResult(App::ProjectService::Instance().AttachProcess(pid));
+                }
+
                 std::string targetSpec = ExtractJsonField(requestJson, "target");
                 if (targetSpec.empty()) targetSpec = ExtractJsonField(requestJson, "file_path");
                 if (targetSpec.empty()) {
-                    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"Missing 'target' argument\"}}";
+                    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"Missing 'target' or 'pid' argument\"}}";
                 }
-                auto res = UTR::TargetManager::Instance().OpenTarget(targetSpec);
-                if (!res.Ok()) {
-                    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32000,\"message\":\"" + EscapeForJson(res.Error()) + "\"}}";
-                }
-                auto info = res.Value()->GetInfo();
-                std::string content = "Target opened: " + info.name + " (" + UTR::TargetKindToString(info.kind) + "), Backend: " + info.activeBackend;
-                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(content) + "\"}]}}";
+                return RenderCommandResult(App::ProjectService::Instance().OpenFile(targetSpec));
             }
 
             if (toolName == "target_close") {
-                UTR::TargetManager::Instance().CloseActiveTarget();
+                App::ProjectService::Instance().Close();
                 return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Target closed successfully.\"}]}}";
             }
 
             if (toolName == "target_info") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) {
                     return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 }
@@ -217,7 +316,7 @@ namespace Dracula {
             }
 
             if (toolName == "target_capabilities") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) {
                     return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 }
@@ -270,13 +369,14 @@ namespace Dracula {
                 std::string targetSpec = ExtractJsonField(requestJson, "target");
                 if (targetSpec.empty()) targetSpec = ExtractJsonField(requestJson, "file_path");
 
+                // Naming a target here opens (or continues) its project, so
+                // analysis always has a durable workspace to write into.
                 std::shared_ptr<UTR::ITarget> target = nullptr;
                 if (!targetSpec.empty()) {
-                    auto openRes = UTR::TargetManager::Instance().OpenTarget(targetSpec);
-                    if (openRes.Ok()) target = openRes.Value();
-                } else {
-                    target = UTR::TargetManager::Instance().GetActiveTarget();
+                    auto opened = App::ProjectService::Instance().OpenFile(targetSpec);
+                    if (!opened.ok) return RenderCommandResult(opened);
                 }
+                target = ResolveProjectTarget();
 
                 if (!target) {
                     return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No target loaded or specified\"}}";
@@ -295,7 +395,7 @@ namespace Dracula {
 
             // ─── Modules & Functions ─────────────────────────────────────────────
             if (toolName == "list_modules") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 auto mods = target->EnumerateModules();
                 if (!mods.Ok()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32002,\"message\":\"" + EscapeForJson(mods.Error()) + "\"}}";
@@ -313,7 +413,7 @@ namespace Dracula {
 
             if (toolName == "inspect_module") {
                 std::string modName = ExtractJsonField(requestJson, "module_name");
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 auto mods = target->EnumerateModules();
                 if (!mods.Ok()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32002,\"message\":\"" + EscapeForJson(mods.Error()) + "\"}}";
@@ -330,7 +430,7 @@ namespace Dracula {
             }
 
             if (toolName == "list_functions" || toolName == "rank_functions") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
 
                 UTR::UtrOrchestratorOptions opts;
@@ -341,7 +441,7 @@ namespace Dracula {
             }
 
             if (toolName == "inspect_function" || toolName == "get_function_disassembly" || toolName == "get_function_cfg" || toolName == "get_function_xrefs" || toolName == "get_callers" || toolName == "get_callees") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
 
                 UTR::UtrOrchestratorOptions opts;
@@ -413,7 +513,7 @@ namespace Dracula {
 
             // ─── Virtual Memory & State ──────────────────────────────────────────
             if (toolName == "memory_map" || toolName == "memory_regions") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 auto mapRes = target->GetMemoryMap();
                 if (!mapRes.Ok()) {
@@ -434,7 +534,7 @@ namespace Dracula {
             }
 
             if (toolName == "memory_read") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 uint64_t addr = ExtractJsonHexOrInt(requestJson, "address", 0);
                 int size = ExtractJsonInt(requestJson, "size", 64);
@@ -452,14 +552,14 @@ namespace Dracula {
             }
 
             if (toolName == "memory_search") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 std::string pattern = ExtractJsonField(requestJson, "pattern");
                 return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"pattern\\\":\\\"" + EscapeForJson(pattern) + "\\\",\\\"matches\\\":[]}\"}]}}";
             }
 
             if (toolName == "memory_snapshot") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 std::string label = ExtractJsonField(requestJson, "label");
                 auto snapRes = target->TakeSnapshot(label);
@@ -494,7 +594,7 @@ namespace Dracula {
             }
 
             if (toolName == "list_runtime_transformations") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 auto memRes = target->GetMemoryMap();
                 if (!memRes.Ok()) {
@@ -533,7 +633,7 @@ namespace Dracula {
             if (toolName == "analyze_anti_evasion") {
                 std::string filePath = ExtractJsonField(requestJson, "file_path");
                 if (filePath.empty()) {
-                    auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                    auto target = ResolveProjectTarget();
                     if (target) filePath = target->GetInfo().path;
                 }
                 std::string resolved = Paths::ResolveResource(filePath);
@@ -554,7 +654,7 @@ namespace Dracula {
             if (toolName == "dotnet_inspect_assembly" || toolName == "inspect_assembly") {
                 std::string filePath = ExtractJsonField(requestJson, "file_path");
                 if (filePath.empty()) {
-                    auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                    auto target = ResolveProjectTarget();
                     if (target) filePath = target->GetInfo().path;
                 }
                 std::string resolved = Paths::ResolveResource(filePath);
@@ -573,7 +673,7 @@ namespace Dracula {
             if (toolName == "dotnet_list_types" || toolName == "list_types") {
                 std::string filePath = ExtractJsonField(requestJson, "file_path");
                 if (filePath.empty()) {
-                    auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                    auto target = ResolveProjectTarget();
                     if (target) filePath = target->GetInfo().path;
                 }
                 std::string resolved = Paths::ResolveResource(filePath);
@@ -595,7 +695,7 @@ namespace Dracula {
             if (toolName == "dotnet_list_methods") {
                 std::string filePath = ExtractJsonField(requestJson, "file_path");
                 if (filePath.empty()) {
-                    auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                    auto target = ResolveProjectTarget();
                     if (target) filePath = target->GetInfo().path;
                 }
                 std::string resolved = Paths::ResolveResource(filePath);
@@ -619,7 +719,7 @@ namespace Dracula {
             if (toolName == "dotnet_inspect_method" || toolName == "dotnet_get_il") {
                 std::string filePath = ExtractJsonField(requestJson, "file_path");
                 if (filePath.empty()) {
-                    auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                    auto target = ResolveProjectTarget();
                     if (target) filePath = target->GetInfo().path;
                 }
                 std::string resolved = Paths::ResolveResource(filePath);
@@ -639,7 +739,7 @@ namespace Dracula {
             if (toolName == "list_pinvokes") {
                 std::string filePath = ExtractJsonField(requestJson, "file_path");
                 if (filePath.empty()) {
-                    auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                    auto target = ResolveProjectTarget();
                     if (target) filePath = target->GetInfo().path;
                 }
                 std::string resolved = Paths::ResolveResource(filePath);
@@ -661,7 +761,7 @@ namespace Dracula {
 
             // ─── Findings, Evidence, Reports ─────────────────────────────────────
             if (toolName == "get_findings") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 UTR::UtrOrchestratorOptions opts;
                 opts.level = UTR::AnalysisLevel::Quick;
@@ -699,7 +799,7 @@ namespace Dracula {
             }
 
             if (toolName == "generate_report") {
-                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                auto target = ResolveProjectTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
                 UTR::UtrOrchestratorOptions opts;
                 opts.level = UTR::AnalysisLevel::Full;

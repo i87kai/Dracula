@@ -51,6 +51,9 @@ namespace Dracula {
         // text. Services stay free of presentation concerns.
         void RenderResult(const App::CommandResult& result);
 
+        // First-run picker shown by `drac` with no arguments (section 4).
+        void RunStartupPicker();
+
         void HandleTarget(const std::vector<std::string>& args);
         void HandleMemory(const std::vector<std::string>& args);
         void HandleDll(const std::vector<std::string>& args);

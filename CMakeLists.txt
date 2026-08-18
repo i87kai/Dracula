@@ -102,6 +102,9 @@ set(DRACULA_CORE_SOURCES
     src/app/memory_service.cpp
     src/app/analysis_services.cpp
     src/app/runtime_service.cpp
+    src/app/hasher.cpp
+    src/app/dracula_image.cpp
+    src/app/sandbox_service.cpp
     src/utr/evidence_graph.cpp
     src/utr/memory_intelligence.cpp
     src/utr/function_intelligence.cpp
@@ -131,6 +134,7 @@ set(DRACULA_CORE_SOURCES
     src/cli/ui.cpp
     src/cli/ascii_art.cpp
     src/cli/startup_card.cpp
+    src/cli/startup_picker.cpp
     src/cli/screen.cpp
     src/cli/command_registry.cpp
     src/cli/line_editor.cpp
@@ -328,6 +332,11 @@ if(BUILD_TESTS)
     add_executable(test_command_regressions tests/test_command_regressions.cpp)
     target_link_libraries(test_command_regressions PRIVATE DraculaCore)
     add_test(NAME CommandRegressions COMMAND test_command_regressions)
+
+    # 10e. .draculaimg Package Format Suite (synthetic fixtures only)
+    add_executable(test_dracula_image tests/test_dracula_image.cpp)
+    target_link_libraries(test_dracula_image PRIVATE DraculaCore)
+    add_test(NAME DraculaImage COMMAND test_dracula_image)
 
     # 11. ManagedHost .NET 10 Out-of-Process Backend Suite
     add_executable(test_managed_backend tests/test_managed_backend.cpp)

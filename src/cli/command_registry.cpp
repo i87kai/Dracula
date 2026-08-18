@@ -2,6 +2,7 @@
 #include "cli/dracula_shell.h"
 #include "app/services.h"
 #include "app/settings.h"
+#include "app/sandbox_service.h"
 
 #include <algorithm>
 #include <cctype>
@@ -847,17 +848,94 @@ namespace Dracula {
         Register({
             .name = "sandbox",
             .aliases = {"vm"},
-            .description = "Run the full QEMU hardware sandbox",
-            .usage = "/sandbox [file]",
-            .category = "Emulation",
-            .detailedHelp = "Executes target inside dedicated QEMU virtual machine guest with live TCP telemetry and automatic snapshot rollback.",
-            .examples = {"/sandbox sample.exe"},
-            .takesFilePath = true,
-            .requiresArgs = false,
-            .argCompletions = {},
-            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
-                shell.HandleSandbox(args);
-            }
+            .description = "Isolated QEMU runtime, its immutable base and disposable overlays",
+            .usage = "/sandbox [status|image|overlays|reset]",
+            .category = "Sandbox",
+            .detailedHelp = "Dracula runs untrusted samples inside a QEMU guest built from an "
+                            "immutable, integrity-checked .draculaimg base. Each run gets a "
+                            "disposable overlay that is deleted afterwards, on success and on "
+                            "failure alike, so the base is never contaminated. QEMU stays stopped "
+                            "until an analysis genuinely needs it.",
+            .examples = {"/sandbox status", "/sandbox image import D:\\VirtualMachines\\win10.vdi",
+                         "/sandbox image verify", "/sandbox image restore", "/sandbox reset"},
+            .requirement = CommandRequirement::None,
+            .subcommands = {
+                {"status", "Factual QEMU environment state", "/sandbox status",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) {
+                     return App::SandboxService::Instance().Status();
+                 }},
+
+                {"image", "Manage the .draculaimg VM package", "/sandbox image [info|import|verify|restore]",
+                 {"info", "import", "verify", "restore"}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     auto& sandbox = App::SandboxService::Instance();
+                     const std::string action = a.empty() ? "info" : a[0];
+
+                     if (action == "info")   return sandbox.ImageInfo();
+                     if (action == "verify") return sandbox.ImageVerify(true);
+                     if (action == "import") {
+                         return sandbox.ImageImport(a.size() > 1 ? a[1] : "");
+                     }
+                     if (action == "restore") {
+                         const bool force = std::any_of(a.begin(), a.end(),
+                             [](const std::string& s) { return s == "--force" || s == "-f"; });
+                         return sandbox.ImageRestore(force);
+                     }
+
+                     App::ErrorDetail e;
+                     e.code = "unknown_subcommand";
+                     e.message = "'" + action + "' is not a /sandbox image action.";
+                     e.reason = "The action did not match a registered handler.";
+                     e.remediation = "Run /sandbox image on its own to see what is available.";
+                     e.availableInstead = {"info", "import", "verify", "restore"};
+                     return App::CommandResult::Failure(e);
+                 }},
+
+                {"overlays", "List and clean disposable run overlays", "/sandbox overlays [clean]",
+                 {"clean"}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     auto& sandbox = App::SandboxService::Instance();
+
+                     if (!a.empty() && (a[0] == "clean" || a[0] == "cleanup")) {
+                         std::vector<std::string> removed;
+                         auto swept = sandbox.SweepStaleOverlays(removed);
+                         auto r = App::CommandResult::Success(
+                             removed.empty()
+                                 ? "No stale overlays to remove."
+                                 : ("Removed " + std::to_string(removed.size()) + " overlay(s), " +
+                                    App::FormatBytes(swept.Ok() ? swept.Value() : 0) + " reclaimed."));
+                         for (const auto& id : removed) r.Line("Removed " + id);
+                         r.Line("Overlays owned by a running QEMU process are never removed.");
+                         return r;
+                     }
+
+                     auto overlays = sandbox.ListOverlays();
+                     if (overlays.empty()) {
+                         auto r = App::CommandResult::Success("No overlays present.");
+                         r.Line("Each isolated run creates one and deletes it when finished.");
+                         return r;
+                     }
+
+                     auto r = App::CommandResult::Success(
+                         std::to_string(overlays.size()) + " overlay(s).");
+                     for (const auto& overlay : overlays) {
+                         r.Line(overlay.id + "  " + App::FormatBytes(overlay.sizeBytes) +
+                                (overlay.active
+                                     ? ("  ACTIVE (pid " + std::to_string(overlay.ownerPid) + ")")
+                                     : "  stale"));
+                     }
+                     return r;
+                 }},
+
+                {"reset", "Stop, clean overlays, verify and rebuild the base", "/sandbox reset",
+                 {}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>&) {
+                     return App::SandboxService::Instance().Reset();
+                 }},
+            },
+            .defaultSubcommand = "status",
+            .argCompletions = {"status", "image", "overlays", "reset"},
         });
 
         // 10b. /antievasion
