@@ -1,20 +1,29 @@
-# Dracula AI Skills Directory
+# Future Dracula Skills
 
-This directory is reserved for provider-neutral, interoperable AI assistant skills and tool profiles.
+This directory documents a planned provider-neutral Skills architecture. It is
+not an implemented runtime and contains no model weights or executable AI
+component.
 
-## Architecture & Principles
-Dracula integrates with Large Language Models and AI Pair Programmers through two native mechanisms:
-1. **Model Context Protocol (MCP)**: Native JSON-RPC 2.0 stdio server (`drac --mcp`).
-2. **Provider-Neutral Skills**: Standard Markdown instructions and tool definitions compatible with Antigravity, Claude Code, Cursor, Windsurf, and custom agentic frameworks.
+Skills are intended to capture operational knowledge such as:
 
-## Standard Layout
+- how Dracula project workflows fit together;
+- when to use a particular application service or MCP tool;
+- how to interpret `STATIC`, `RESOLVED`, `LIVE-READ VERIFIED`, `Observed`,
+  `Inferred`, and `Suspected` evidence;
+- decision procedures for choosing static, live, emulated, or QEMU analysis;
+- bounded analysis playbooks; and
+- safe artifact and report handling.
+
+The goal is to reduce trial and error and unnecessary client context. Skills
+supplement model knowledge; they do not increase a model's fundamental
+intelligence.
+
+Repository authoring sources are planned under `skills/`. Release packaging is
+intended to install approved skills under:
+
+```text
+<install>\brain\skills\
 ```
-skills/
-├── README.md                 # This specification
-├── dracula-investigator/     # Deep binary triage & threat assessment skill
-└── dracula-memory-forensics/ # Dynamic memory layout & unpacker skill
-```
 
-## Guidelines for Creating Dracula Skills
-* Skills must rely on standard Dracula CLI commands (`/analyze`, `/memory`, `/emulate`, `/findings`, `/report`) or MCP tool equivalents.
-* Skills must maintain target provenance and reference evidence tags (`CALCULATED`, `RESOLVED`, `LIVE-READ VERIFIED`).
+No provider-specific skill package should be presented as a built-in Dracula
+capability until a runtime, schema, tests, and security boundary are designed.

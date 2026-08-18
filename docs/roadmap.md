@@ -1,28 +1,64 @@
-# Dracula Project Roadmap
+# Roadmap
 
-This document outlines the strategic roadmap and future milestones for the Dracula platform.
+The roadmap separates shipped behavior from planned and experimental work.
+Items here are direction, not a release commitment.
 
----
+## Implemented
 
-## 🎯 v1.3.x — Open Source Release & Ecosystem Foundation (Current)
-* [x] Authoritative single version source (`v1.3.1`).
-* [x] Auto-update subsystem with WinINet GitHub API integration and SHA-256 verification.
-* [x] Standardized installer (`scripts/install.ps1`) and web bootstrap (`scripts/bootstrap.ps1`).
-* [x] Zero hardcoded personal paths across repository.
-* [x] Comprehensive documentation suite and GPL v3.0 license.
-* [x] Continuous Integration (CI) and automated release packaging workflows.
+- Durable project workspaces and project-owned target copies
+- Project-aware CLI and MCP frontends over application services
+- PE analysis, Capstone disassembly, CFGs, XRefs, and function intelligence
+- Authorized live-process modules, threads, memory maps, reads, and snapshots
+- Static/live DLL address correlation
+- Runtime event and evidence graph persistence
+- Unicorn x86/x64 emulation with selected Win32 HLE
+- Driver static analysis and managed assembly metadata inspection
+- QEMU orchestration, GuestAgent telemetry, immutable bases, and overlays
+- Streaming `.draculaimg` package, verify, and restore operations
+- Verified release bootstrap and transactional updater path
 
----
+## Planned
 
-## 🚀 Future Milestones
+### Provider-neutral Dracula Skills
 
-### Milestone 1: Local Web GUI Architecture (Planned)
-* **Design Goal**: A lightweight, standalone web interface running locally on `127.0.0.1`.
-* **Zero Engine Rewrite**: The web interface will consume the existing `App::*` and `UTR::*` service layer via clean JSON-RPC / WebSocket endpoints.
-* **Features**: Interactive CFG graph explorer, memory diff visualizer, real-time sandbox execution timeline, and YARA signature editor.
+Skills will document operational knowledge: how workflows fit together, when
+to choose a service, how to interpret evidence levels, decision procedures, and
+analysis playbooks. Repository sources will live under `skills/`; packaged
+skills are intended for `<install>\brain\skills\`.
 
-### Milestone 2: Advanced Brain Intelligence Models
-* Utilization of `<InstallRoot>\brain\` workspace for offline machine-learning based function classification and malware lineage similarity clustering.
+Skills should reduce trial and error and wasted model context. They supplement
+model knowledge; they do not increase a model's fundamental intelligence. No
+Skills runtime is implemented today.
 
-### Milestone 3: Cross-Platform Target Expansion
-* Extended support for ELF x86_64, Mach-O binaries, and cross-platform remote QEMU targets.
+### Local web frontend
+
+```text
+        Dracula Core
+             │
+    Application Services
+       /             \
+      /               \
+    CLI          Local Web GUI
+    now              planned
+```
+
+The local frontend is intended for CFGs, call graphs, large function tables,
+memory maps, runtime timelines, project browsing, evidence relationships,
+QEMU state, and artifacts. It will reuse application services. No Node,
+Electron, React, Vue, or other web dependency is part of the current tree.
+
+### Deeper target integration
+
+- More complete debugger execution control beyond current Win32/DbgHelp reads
+- Project-first service target creation
+- Additional managed runtime visibility
+- Additional authorized target and backend adapters
+
+## Experimental or environment-dependent
+
+- In-process x64 agent telemetry
+- Optional DbgEng-related integration beyond the DbgHelp-backed read path
+- Full live QEMU guest acceptance, which depends on the user's local QEMU and
+  licensed Windows environment
+- Anti-evasion differential profiles, whose results require analyst
+  interpretation and are not proof of malicious intent

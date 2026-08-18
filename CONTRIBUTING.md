@@ -1,63 +1,124 @@
 # Contributing to Dracula
 
-Thank you for your interest in contributing to **Dracula — Unified Binary Intelligence Platform**!
+Dracula is a Windows C++20 reverse-engineering workspace. Contributions are
+welcome when they preserve the project model, evidence semantics, and the
+separation between analysis code and presentation code.
 
-Dracula is an open-source, reproducible reverse engineering platform designed around three immutable pillars:
-1. **ONE PROJECT** — Durable workspace storage that persists samples, artifacts, and evidence graphs.
-2. **ONE TARGET CONTEXT** — Unified inspection across static PE binaries, live processes, .NET assemblies, DLLs, and drivers.
-3. **ONE EVIDENCE MODEL** — Every claim carries rigorous provenance (`CALCULATED`, `RESOLVED`, `LIVE-READ VERIFIED`).
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities
+through the private process in [SECURITY.md](SECURITY.md), not a public issue.
 
----
+## Prerequisites
 
-## 🛠️ Development Setup
+- Windows 10 or 11 x64
+- Git with submodule support
+- CMake 3.20 or newer
+- MinGW-w64 GCC or another supported C++20 toolchain
+- PowerShell 5.1 or newer
+- .NET 10 SDK for the managed-code host
 
-### Prerequisites
-* **Windows 10 / 11 (x64)**
-* **CMake 3.20+**
-* **GCC / MinGW-w64** (or MSVC 2022) with C++20 support
-* **PowerShell 5.1+**
+See [Building from Source](docs/building.md) for the maintained commands and
+toolchain notes.
 
-### Building from Source
+## Build and test
+
 ```powershell
-# 1. Clone the repository
-git clone https://github.com/i87kxxz/Dracula.git
+git clone --recurse-submodules https://github.com/i87kxxz/Dracula.git
 cd Dracula
-
-# 2. Configure build with CMake
-cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-
-# 3. Build project and test suites
-cmake --build build -j8
-
-# 4. Run automated test suites
+cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 ```
 
----
+Run the full suite before submitting a pull request. A fix should include a
+focused regression test when the behavior can be exercised safely and
+deterministically. Tests must use synthetic fixtures and isolated temporary
+workspaces; never commit real samples, dumps, VM images, credentials, or user
+projects.
 
-## 🧪 Testing Guidelines
+## Architecture boundaries
 
-* Every bugfix or new feature **must** include corresponding automated unit/integration tests under `tests/`.
-* The command registry is authoritative: all new commands or subcommands must be registered in `src/cli/command_registry.cpp` with handlers and tested in `tests/test_command_registry.cpp`.
-* Run the full test suite before opening a Pull Request:
-  ```powershell
-  ctest --test-dir build --output-on-failure
-  ```
+The intended dependency direction is:
 
----
+```text
+Core analysis and UTR
+        |
+Application Services and structured DTOs
+        |
+CLI / MCP / future frontends
+```
 
-## 📐 Architecture & Coding Standards
+- Analysis logic belongs in the core or an appropriate backend.
+- `src/app/` coordinates core behavior and returns structured data.
+- `src/cli/` owns terminal input, formatting, and presentation only.
+- Frontends must not reimplement parsers, target resolution, persistence, or
+  evidence logic.
+- Project-owned paths must resolve through `ProjectContext`, `ProjectManager`,
+  or the common path utilities. Do not add personal or build-tree paths.
 
-* **C++ Standard**: C++20.
-* **Separation of Presentation & Logic**: Core analysis services (`App::*` and `UTR::*`) return structured DTOs and `CommandResult` without console escape codes or terminal formatting. Terminal layout is handled solely in `src/cli/`.
-* **Zero Hardcoded Personal Paths**: All paths must resolve through `Paths::*` utilities or relative workspace roots.
-* **Semantic Error Reporting**: Avoid bare error messages. Provide structured `ErrorDetail` (`code`, `message`, `reason`, `remediation`, `availableInstead`).
+## Commands
 
----
+`CommandRegistry` is the source of truth for command names, subcommands,
+descriptions, capability requirements, and dispatch. When adding or changing a
+command:
 
-## 📦 Pull Request Process
+1. Add the operation to the relevant application service if it is not purely
+   presentational.
+2. Register the command and every dispatchable subcommand.
+3. Keep palette, help, completion, and handler behavior registry-driven.
+4. Add registry/dispatch tests.
+5. Update [docs/cli.md](docs/cli.md) and any affected workflow document.
 
-1. Fork the repository and create a feature branch (`git checkout -b feature/amazing-feature`).
-2. Ensure your changes compile with zero warnings and pass all 19+ automated test suites.
-3. Commit with concise, descriptive commit messages.
-4. Push to your branch and open a Pull Request using the PR template.
+Do not document an alias or syntax that is not registered.
+
+## Projects and persistence
+
+A project is durable user data. Changes to `project.json`, artifact locations,
+snapshot formats, indexes, or cleanup rules need compatibility tests. Cleanup,
+repair, update, and default uninstall operations must not remove projects,
+configuration, VM bases, or retained evidence.
+
+Use atomic writes and explicit migration where persistent formats change.
+
+## Analysis backends
+
+New backends should implement the existing target/application-service
+boundaries and report factual readiness. Installed, available, connected,
+partial, and unsupported are different states. Optional dependencies must
+degrade clearly when unavailable and must not be represented as active merely
+because a file exists.
+
+## Evidence terminology
+
+Use the terms already implemented by the relevant subsystem. Address
+correlation currently distinguishes `STATIC`, `RESOLVED`, and
+`LIVE-READ VERIFIED`. Evidence graph relationships distinguish `Observed`,
+`Inferred`, `Suspected`, and `Unknown`.
+
+Do not introduce broad claims such as "cryptographic provenance" unless the
+code and tests implement that exact security property.
+
+## Dependencies
+
+Before adding a dependency, document:
+
+- its purpose and why existing facilities are insufficient;
+- upstream project and pinned version;
+- license and GPL-3.0-only compatibility;
+- whether it is built from source, linked, dynamically discovered, or only an
+  optional external tool;
+- changes required in `.gitmodules`, CMake, packaging, CI, and
+  `THIRD_PARTY_NOTICES.md`.
+
+Do not commit redistributables, SDK components, or third-party binaries without
+verified redistribution rights.
+
+## Documentation and pull requests
+
+Keep README concise and put detailed procedures in `docs/`. Public examples
+must be safe, reproducible, free of private paths, and valid against the current
+registry. Public presentation uses PNG screenshots and text diagrams, not SVG
+artwork or badge images.
+
+Use a focused branch and descriptive commits. In the pull request, explain the
+user-visible behavior, architecture impact, tests performed, and any known
+limitations.

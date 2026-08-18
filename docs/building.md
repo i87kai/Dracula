@@ -1,55 +1,91 @@
-# Building Dracula from Source
+# Building from Source
 
-This guide covers setting up your build environment, compiling Dracula, and running the test suite on Windows x64.
+Dracula is a Windows C++20 project with pinned Capstone and Unicorn submodules,
+vendored SQLite and Zstandard sources, and an out-of-process .NET 10 managed
+host.
 
----
+## Prerequisites
 
-## 1. Prerequisites
+- Windows 10 or 11, x64
+- Git for Windows
+- CMake 3.20 or newer
+- MinGW-w64 GCC 13+ or a current MSVC toolchain with C++20 support
+- .NET 10 SDK for the managed-analysis host
+- PowerShell 5.1 or newer for packaging and installer tests
 
-* **Windows 10 / 11 (64-bit)**
-* **CMake 3.20 or newer**
-* **MinGW-w64 (GCC 13+)** or **MSVC 2022** with C++20 standard support.
-* **Git** and **PowerShell 5.1+**
+Git for Windows supplies `sh.exe`, used only by Unicorn's MinGW configuration.
+Dracula includes a narrow `pkg-config` compatibility shim because Unicorn's
+compact build checks that the command exists but does not query a package.
 
----
-
-## 2. Clone & Build Instructions
+## Clone
 
 ```powershell
-# 1. Clone repository
-git clone https://github.com/i87kxxz/Dracula.git
+git clone --recurse-submodules https://github.com/i87kxxz/Dracula.git
 cd Dracula
-
-# 2. Generate CMake build tree
-cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-
-# 3. Compile project & test binaries
-cmake --build build -j8
 ```
 
----
-
-## 3. Running Test Suites
-
-Dracula includes 19+ automated CTest suites verifying disassembler bindings, terminal UI geometry, UTR target adapters, evidence graph structures, and memory intelligence:
+If the repository was cloned without submodules:
 
 ```powershell
+git submodule update --init --recursive
+```
+
+## MinGW release build
+
+```powershell
+cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 ```
 
-Expected output:
-```text
-100% tests passed, 0 tests failed out of 19
-Total Test time (real) = ~4.5 sec
-```
+The first build compiles Unicorn from source and takes longer than an
+incremental Dracula build.
 
----
+## Visual Studio build
 
-## 4. Packaging Release Binaries
-
-To produce an official release zip and `.sha256` digest locally:
+From a Developer PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\package_release.ps1 -Version "1.3.1"
+cmake -S . -B build-vs -G "Visual Studio 18 2026" -A x64
+cmake --build build-vs --config Release --parallel 4
+ctest --test-dir build-vs -C Release --output-on-failure
 ```
-The output archive is created in `dist/Dracula-v1.3.1-windows-x64.zip`.
+
+Use the generator installed on the machine; CMake lists available generators
+with `cmake --help`.
+
+## Build options
+
+```text
+BUILD_TESTS=ON          Build the CTest suite (default)
+```
+
+The CMake project limits Capstone and Unicorn to the x86 family required by the
+Windows x64 product.
+
+## Package
+
+After a Release build:
+
+```powershell
+& .\packaging\package_release.ps1 -BuildDir .\build
+```
+
+The script derives the version from the top-level CMake project and refuses a
+different `-Version`. It creates:
+
+```text
+dist\Dracula-v<version>-windows-x64.zip
+dist\Dracula-v<version>-windows-x64.zip.sha256
+```
+
+Inspect the archive before publication. It must not contain source trees,
+CMake caches, object files, projects, dumps, VM images, `.draculaimg` files, or
+overlays.
+
+## Test environment notes
+
+Most tests use synthetic fixtures. Live process and installed-root tests need
+normal Windows access to temporary and per-user locations. Real QEMU guest
+acceptance additionally needs QEMU, a configured user-owned image, and
+GuestAgent; its absence is an environment limitation, not simulated proof.

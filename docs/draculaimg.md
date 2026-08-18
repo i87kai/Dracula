@@ -1,55 +1,67 @@
-# The .draculaimg Container Format
+# The `.draculaimg` Format
 
-The `.draculaimg` format is Dracula's proprietary, high-performance compressed container format designed for distributing and restoring local virtual machine base images.
+`.draculaimg` is Dracula's open-source container format for packaging a user's
+local VM disk into a verifiable, restorable analysis base.
 
----
+Dracula does not ship a `.draculaimg`, Windows image, product key, or Windows
+installation media.
 
-## 1. Specification Overview
+## Format version 1
 
-* **Container Extension**: `.draculaimg`
-* **Compression Algorithm**: Zstandard (zstd) with configurable chunk size (default: 4 MB chunks).
-* **Integrity Model**:
-  - Global SHA-256 header checksum verifying the uncompressed source image.
-  - Per-chunk CRC-32 checksums enabling incremental corruption detection without decompressing the entire multi-gigabyte container.
-* **Streaming Design**: Streamed reads and writes via native streaming buffers, enabling import/export of 20+ GB virtual disks with constant low memory usage (< 64 MB RAM).
-
----
-
-## 2. Container Binary Header Layout
-
-```
-Offset  Size     Field Description
-────────────────────────────────────────────────────────────────────────
-0x00    4 bytes  Magic Identifier ("DRAC" / 0x43415244)
-0x04    2 bytes  Format Version (e.g. 1)
-0x06    2 bytes  Header Size
-0x08    8 bytes  Original Uncompressed Size (bytes)
-0x10    8 bytes  Compressed Payload Size (bytes)
-0x18    4 bytes  Chunk Count
-0x1C    4 bytes  Chunk Size (e.g. 4194304 bytes)
-0x20    32 bytes SHA-256 Digest of Uncompressed Image
-0x40    ...      Chunk Index Table (Offset, CompressedSize, CRC-32)
-────────────────────────────────────────────────────────────────────────
+```text
+┌──────────────────────────────────────────────┐
+│ fixed 512-byte header                        │
+│ magic · version · source metadata · SHA-256  │
+├──────────────────────────────────────────────┤
+│ chunk record · Zstandard or raw payload      │
+├──────────────────────────────────────────────┤
+│ chunk record · Zstandard or raw payload      │
+├──────────────────────────────────────────────┤
+│ ...                                          │
+└──────────────────────────────────────────────┘
 ```
 
----
+The eight-byte magic is `DRACIMG\0`. The default chunk size is 16 MiB. Each
+record stores a `DCHK` marker, compressed and uncompressed sizes, flags, and a
+CRC-32 of the uncompressed chunk. A chunk is stored raw if compression would
+make it larger.
 
-## 3. CLI Commands
+The header stores the original size, chunk size/count, source format and name,
+creation metadata, Dracula version, and SHA-256 of the original disk content.
 
-* **Import VM Image**:
-  ```dracula
-  drac> /sandbox image import C:\VMs\win10.vdi
-  ```
-  Converts and packages the source disk into `<InstallRoot>\vm\base\win10.draculaimg` with progress reporting.
+## Operations
 
-* **Verify VM Package**:
-  ```dracula
-  drac> /sandbox image verify
-  ```
-  Validates per-chunk CRC-32 checksums and reports any localized disk corruption.
+Package a locally supplied image:
 
-* **Restore Base Image**:
-  ```dracula
-  drac> /sandbox image restore
-  ```
-  Extracts and decompresses the raw base image to `<InstallRoot>\vm\base\win10.raw`.
+```text
+/sandbox image import C:\VMs\windows10.vdi
+```
+
+Inspect and verify:
+
+```text
+/sandbox image info
+/sandbox image verify
+```
+
+Restore the operational base:
+
+```text
+/sandbox image restore
+```
+
+Packaging and restore are streaming operations. Partial output is removed on
+failure or cancellation. Verification checks structure and per-chunk CRC-32;
+deep verification also decompresses all chunks and recomputes the original
+SHA-256.
+
+## Supported source descriptions
+
+The package records the source filename and extension such as VDI, qcow2, or
+raw. The payload is disk content, not a license-transfer mechanism. Users are
+responsible for the source environment and its licensing.
+
+## QEMU use
+
+The verified package restores an operational base under `vm\base`. QEMU uses
+that base through temporary qcow2 overlays. See [QEMU Sandbox](sandbox.md).

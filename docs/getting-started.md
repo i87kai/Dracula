@@ -1,73 +1,84 @@
-# Getting Started with Dracula
+# Getting Started
 
-This guide walks you through your first analysis session with Dracula.
+Dracula is a project-centric Windows analysis workspace. Opening a file or
+attaching to a process creates a durable project; later commands operate on the
+active project's target rather than requiring the same path or PID each time.
 
----
+## Requirements
 
-## 1. Launching the Interactive Shell
+- Windows 10 or 11, x64
+- PowerShell 5.1 or newer for installation
+- .NET 10 runtime for managed assembly inspection
+- QEMU and a user-provided Windows environment only for isolated VM analysis
 
-After installation, launch Dracula from your terminal:
+## Install and launch
+
+```powershell
+irm https://raw.githubusercontent.com/i87kxxz/Dracula/main/scripts/bootstrap.ps1 | iex
+```
+
+Open a fresh terminal after installation:
 
 ```powershell
 drac
 ```
 
-On first launch without arguments, Dracula displays the startup picker allowing you to:
-1. Open a target executable for analysis
-2. Attach to a running process by PID
-3. Continue a saved project workspace
-4. Enter the direct interactive shell
+The first-run picker offers file, process, driver, and VM/disk-image workflows.
+Press `Esc` to go directly to the command prompt. Type `/` to browse the
+registered commands.
 
----
+## First static project
 
-## 2. Basic Static Analysis Workflow
+Use a benign executable you are authorized to inspect:
 
-To analyze an executable file:
-
-```dracula
-drac> /analyze samples\sample.exe
+```text
+/target C:\Windows\System32\notepad.exe
+/target info
+/static
+/imports
+/strings
+/functions
+/findings
+/project storage
 ```
 
-Dracula creates a durable project under `<InstallRoot>\projects\sample\`, computes cryptographic hashes (SHA-256), analyzes PE headers, evaluates mitigations, extracts strings, and computes threat scores.
+The first command copies the target into the project. Static analysis then uses
+that project copy, so the workspace stays usable if the original path moves.
 
-Inspect specific components:
-* PE Headers & Sections: `/headers`
-* Security Mitigations: `/security`
-* Import Table & Suspicious APIs: `/imports`
-* Exported Functions: `/exports`
-* Disassemble Entrypoint: `/disasm`
-* Extracted Strings: `/strings`
+## First live project
 
----
+Start Notepad, then:
 
-## 3. Disassembly & Control Flow
-
-To disassemble code at an explicit Virtual Address (VA) or Relative Virtual Address (RVA):
-
-```dracula
-drac> /disasm 0x00401000 20
-drac> /cfg 0x00401000
-drac> /functions
+```text
+/process list
+/process attach <notepad-pid>
+/process info
+/process modules
+/memory map
+/runtime status
+/dll windowscodecs.dll
 ```
 
----
+The attach operation records the PID separately from the resolved backing
+executable. File-oriented commands use the backing image; process commands use
+the live target.
 
-## 4. Emulation & Dynamic Execution
+## Continue later
 
-To emulate a specific function using Unicorn 2 with Win32 High-Level Emulation (HLE) hooks:
-
-```dracula
-drac> /emulate 0x00401000
+```text
+/project list
+/project open <id-or-name>
+/project info
+/artifacts
 ```
 
----
+Use `/project cleanup` to remove only disposable project data. Deletion is a
+separate, confirmed operation.
 
-## 5. Exporting Reports
+## Next reading
 
-Export your analysis findings to HTML, Markdown, or JSON:
-
-```dracula
-drac> /report html
-drac> /report md summary.md
-drac> /report json analysis.json
-```
+- [Installation and maintenance](installation.md)
+- [Projects and persistence](projects.md)
+- [CLI reference](cli.md)
+- [Architecture](architecture.md)
+- [Troubleshooting](troubleshooting.md)

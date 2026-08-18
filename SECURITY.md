@@ -1,23 +1,40 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.3.x   | :white_check_mark: |
-| < 1.3.0 | :x:                |
+Security fixes are provided for the current `1.3.x` release line. Older release
+lines may no longer receive fixes.
 
----
+## Reporting a vulnerability
 
-## Reporting a Vulnerability
+Do not open a public issue for a suspected Dracula vulnerability. Use the
+repository's [private vulnerability reporting
+page](https://github.com/i87kxxz/Dracula/security/advisories/new) when it is
+available. If private reporting is unavailable, open a public issue containing
+only a request for a private contact channel and no sensitive technical detail.
 
-We take the security of Dracula and its analysis isolation environment seriously.
+Include the affected version, platform, impact, reproduction steps, and the
+smallest safe proof of concept you can provide privately.
 
-If you discover a security vulnerability, sandbox escape bug, or arbitrary code execution flaw in Dracula or its Guest Agent:
-1. **Do NOT create a public issue on GitHub.**
-2. Report the vulnerability privately via GitHub Security Advisories:
-   - Navigate to the [Security Tab](https://github.com/i87kxxz/Dracula/security/advisories) of the repository.
-   - Click **"Report a vulnerability"**.
-3. Include detailed steps to reproduce, sample payloads, and expected vs. actual behavior.
+Do not attach any of the following to public issues or discussions:
 
-We will acknowledge receipt within 48 hours and coordinate a fix and coordinated disclosure timeline.
+- confidential or proprietary binaries;
+- malware samples;
+- process or memory dumps;
+- VM images or `.draculaimg` packages;
+- project workspaces or runtime captures containing private data;
+- credentials, API keys, tokens, or personal information.
+
+Analysis targets and captures can contain secrets even when Dracula itself did
+not create them. Review and minimize every artifact before sharing it.
+
+## Scope
+
+Relevant reports include vulnerabilities in Dracula, its installer/updater,
+project parsing, report generation, GuestAgent protocol, process/runtime
+inspection, and QEMU orchestration. Security weaknesses in third-party tools or
+the user's guest operating system should normally be reported to their upstream
+maintainers, unless Dracula's integration creates the vulnerability.
+
+We will acknowledge valid reports and coordinate remediation and disclosure.
+Please do not publish details before a fix or an agreed disclosure date.

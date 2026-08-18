@@ -1,62 +1,62 @@
-# Model Context Protocol (MCP) Integration
+# MCP Integration
 
-Dracula provides a native, high-performance stdio server implementing the **Model Context Protocol (MCP)** standard (Protocol Version `2024-11-05`).
+Dracula exposes project-aware analysis operations as a stdio Model Context
+Protocol server. MCP is optional; the CLI and analysis engine do not require an
+AI client.
 
----
+## Start the server
 
-## 1. Overview
+```powershell
+drac --mcp
+```
 
-By integrating Dracula as an MCP server, AI assistants (Claude Desktop, Google Antigravity, Cursor, Windsurf) can directly inspect binary targets, disassemble functions, evaluate security mitigations, read memory maps, and query the evidence graph autonomously.
+In MCP mode, stdout is reserved for newline-delimited JSON-RPC messages. The
+terminal UI and ANSI formatting are disabled.
 
-### Clean Stdio Guarantee
-When invoked with `--mcp`, Dracula enters a dedicated headless stdio mode:
-* Zero terminal ANSI sequences or color codes on `stdout`.
-* Pure JSON-RPC 2.0 frames delimited by newlines.
-* Log messages redirected exclusively to internal files.
+## Client configuration
 
----
+Use the installed command:
 
-## 2. Configuration Examples
-
-### Claude Desktop (`claude_desktop_config.json`)
 ```json
 {
   "mcpServers": {
     "dracula": {
-      "command": "C:\\Dracula\\bin\\drac.exe",
+      "command": "drac",
       "args": ["--mcp"]
     }
   }
 }
 ```
 
-### Cursor / Custom Stdio Configuration
-```json
-{
-  "mcpServers": {
-    "dracula": {
-      "command": "drac.exe",
-      "args": ["--mcp"]
-    }
-  }
-}
-```
+If the client does not inherit the user PATH, use the absolute path to
+`<install>\bin\drac.exe`.
 
----
+## Project-aware model
 
-## 3. Available MCP Tools
+The MCP frontend resolves targets through the same project and application
+services as the CLI. Tools cover target/project opening, static analysis,
+headers, imports/exports, strings, disassembly, memory maps and comparisons,
+functions, runtime status/events, artifacts, managed inspection, findings, and
+sandbox operations where the active target supports them.
 
-| Tool Name | Parameters | Description |
-|---|---|---|
-| `target_open` | `path` (string) OR `pid` (number) | Open a static file or attach to a live process. |
-| `static_analyze` | None | Run full static pipeline on the active target. |
-| `disassemble` | `address` (string), `count` (number) | Disassemble instructions at specified address. |
-| `headers_inspect` | None | Inspect PE headers and data directories. |
-| `security_audit` | None | Audit ASLR, DEP, CFG, SEH, and Authenticode mitigations. |
-| `imports_list` | None | List imported DLLs and sensitive API calls. |
-| `exports_list` | None | List exported functions and RVAs. |
-| `strings_extract` | `min_length` (number) | Extract and classify strings. |
-| `memory_map` | None | Query virtual memory layout and protection flags. |
-| `findings_get` | None | Retrieve structured findings and threat score. |
-| `project_list` | None | List durable project workspaces. |
-| `project_open` | `id` (string) | Switch active project workspace. |
+Request the live tool schema with MCP `tools/list`; that result is
+authoritative for the installed version.
+
+## Data boundary
+
+Dracula does not choose or contact an AI provider. It writes JSON-RPC to the
+configured client's stdio connection. Whether a client processes data locally
+or sends it to a remote provider depends on that client and provider.
+
+Review the client configuration before exposing proprietary targets, memory,
+or reports. A target is not uploaded merely because MCP mode is available.
+
+## Interpretation
+
+An AI receives structured access to the same `ProjectContext` and evidence
+model, reducing the need to paste disconnected addresses, logs, screenshots,
+and dumps. MCP does not make every model equally capable and does not replace
+Dracula's parsing, memory, emulation, or evidence engines.
+
+Provider-neutral Dracula Skills are planned separately. No Skills runtime is
+implemented in this release.

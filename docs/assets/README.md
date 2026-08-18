@@ -1,9 +1,7 @@
-# Dracula Documentation Visual Assets
+# Documentation Assets
 
-This directory contains visual diagrams, screenshots, terminal captures, and UI demos referenced across Dracula's documentation suite.
+- `terminal-overview.png` — real Dracula CLI screenshot used by the repository
+  landing page.
 
-## Image Structure
-* `terminal-overview.png`: Responsive 3-region terminal interface showing header, scrollback viewport, and prompt.
-* `architecture-overview.svg`: Universal Target Runtime (UTR) and service layer diagram.
-* `draculaimg-format.svg`: Streaming Zstandard container format layout.
-* `mcp-flow.svg`: Model Context Protocol integration diagram.
+Public documentation uses PNG screenshots and Markdown/text diagrams. It does
+not use SVG artwork or badge images.

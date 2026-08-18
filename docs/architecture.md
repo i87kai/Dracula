@@ -1,74 +1,109 @@
-# Dracula Architecture & Design Principles
+# Architecture
 
-Dracula is designed around three foundational principles that distinguish it from traditional disassemblers and sandboxes:
+Dracula separates analysis logic, project-aware operations, and presentation.
 
-```
-┌────────────────────────────────────────────────────────┐
-│                        DRACULA                         │
-│  "ONE PROJECT, ONE TARGET CONTEXT, ONE EVIDENCE MODEL" │
-└────────────────────────────────────────────────────────┘
-```
-
----
-
-## 1. The Three Architectural Pillars
-
-### Pillar 1: ONE PROJECT (Durable Workspaces)
-Traditional debuggers and disassemblers maintain ephemeral in-memory state that evaporates upon process termination. Dracula treats every target as a durable project on disk (`<InstallRoot>\projects\<name>\`):
-* The sample binary is copied immutably into the project.
-* Static headers, section dumps, and hashes are computed once and stored.
-* Memory snapshots, disassembly listings, and CFG structures are persisted.
-* Dynamic event timelines and findings are committed to project SQLite databases.
-
-### Pillar 2: ONE TARGET CONTEXT (Universal Target Runtime)
-Whether an analyst is inspecting an on-disk `.exe`, a live running PID (`/process attach`), a `.NET` assembly (`/dotnet`), a loaded dynamic link library (`/dll`), or a kernel driver (`/driver`), the target model remains unified:
-* Commands resolve their subject from the active target context automatically.
-* Attached live processes mirror their backing disk image for seamless static inspection.
-
-### Pillar 3: ONE EVIDENCE MODEL (Provenance Verification)
-Every assertion made by Dracula carries rigorous verification metadata:
-* `[CALCULATED]`: Mathematically derived from static image data (e.g. Shannon entropy, hash digests).
-* `[RESOLVED]`: Reconstructed through static symbol resolution or heuristic decompilation (e.g. CFG branch influence, imported function RVAs).
-* `[LIVE-READ VERIFIED]`: Directly inspected from live virtual memory, kernel ETW telemetry, or QEMU hypervisor readback.
-
----
-
-## 2. Component Layering
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                             PRESENTATION                                 │
-│      Terminal UI (REPL)      │      MCP stdio Server      │  (Future)    │
-│  InteractiveScreen, Palette  │      JSON-RPC 2.0 Engine   │  Local Web   │
-└───────────────────────────────────┬──────────────────────────────────────┘
-                                    │
-┌───────────────────────────────────▼──────────────────────────────────────┐
-│                        APPLICATION SERVICE LAYER                         │
-│   ProjectService   TargetService   MemoryService   AnalysisServices     │
-│   SandboxService   UpdateService   Settings        HtmlReportWriter      │
-└───────────────────────────────────┬──────────────────────────────────────┘
-                                    │
-┌───────────────────────────────────▼──────────────────────────────────────┐
-│                    UNIVERSAL TARGET RUNTIME (UTR)                        │
-│   FileTarget   ProcessTarget   ManagedTarget   DriverTarget   DllHarness │
-│   EvidenceGraph   MemoryIntelligence   FunctionIntelligence              │
-└───────────────────────────────────┬──────────────────────────────────────┘
-                                    │
-┌───────────────────────────────────▼──────────────────────────────────────┐
-│                      CORE ENGINES & HARDWARE HYPERVISOR                  │
-│   Capstone 5.0.1 (Disassembly)      │   Unicorn 2 (CPU Emulation)        │
-│   DbgEng / DbgHelp (Native Debug)   │   QEMU x86_64 Hypervisor           │
-│   SQLite3 (Artifact Persistence)    │   Zstandard (Chunked Compression)  │
-└──────────────────────────────────────────────────────────────────────────┘
+```text
+┌──────────────────────────────────────────────┐
+│                 Dracula Core                 │
+│ PE · UTR · Memory · Functions · Evidence     │
+│ Unicorn · QEMU · Runtime backends             │
+└──────────────────────┬───────────────────────┘
+                       │ structured results
+┌──────────────────────▼───────────────────────┐
+│             Application Services             │
+│ Project · Target · Static · Process · Memory │
+│ DLL · Runtime · Sandbox · Update             │
+└──────────────────────┬───────────────────────┘
+                       │
+                 ┌─────┴─────┐
+                 ▼           ▼
+                CLI         MCP
+                 │
+                 └── future local web frontend
 ```
 
----
+## Core and UTR
 
-## 3. Strict Boundary: Presentation vs Services
+The Universal Target Runtime exposes target identity and capabilities for
+native files, DLLs, running processes, managed assemblies, services, drivers,
+and VM-backed targets. Capability checks happen before an operation runs, so a
+static assembly does not pretend to provide process memory and a file target
+does not pretend to provide threads.
 
-Dracula enforces a strict architectural boundary: **Engine and service layers return pure data DTOs and `CommandResult` structs without terminal escape codes, ANSI colors, or UI formatting.**
+Core components perform PE parsing, disassembly, CFG and XRef work, function
+indexing, memory transforms, emulation, and evidence graph operations. They do
+not format terminal output.
 
-This decoupling ensures that:
-1. The interactive terminal can format outputs with dynamic ANSI colors and responsive widths.
-2. The MCP server can serialize pure JSON payloads for LLM assistants without ANSI corruption.
-3. Future presentation adapters (such as the planned Local Web GUI) can consume the exact same service interfaces without modifying a single line of reverse-engineering logic.
+## Application services
+
+Application services resolve every request through the active project and
+return DTOs such as `CommandResult`, artifacts, evidence references, storage
+reports, module correlation, and runtime status. This is the boundary shared by
+the CLI and MCP server.
+
+`ProjectContext` binds durable target identity to static and runtime artifacts.
+A running process keeps its PID and backing executable in different fields;
+the PID is never interpreted as a path.
+
+## Frontends
+
+The CLI owns terminal layout, command discovery, and rendering. The
+`CommandRegistry` is authoritative for command names, aliases, usage,
+subcommands, requirements, completion, and dispatch.
+
+MCP is a headless stdio frontend over project-aware operations. A future local
+web frontend is planned to consume the same service boundary. It is not present
+in this release.
+
+## Evidence terminology
+
+Dracula uses related but distinct labels.
+
+Address and DLL correlation:
+
+- `STATIC`: obtained from an on-disk image without a live module base.
+- `RESOLVED`: an RVA was correlated with a real loaded module base.
+- `LIVE-READ VERIFIED`: the corresponding live address was read successfully.
+
+Evidence graph truth levels:
+
+- `Observed`: directly measured or recorded by a backend.
+- `Inferred`: a logical conclusion from observations.
+- `Suspected`: a hypothesis requiring more correlation.
+- `Unknown`: insufficient visibility.
+
+Evidence nodes also record engine/backend, session, module, address/RVA,
+timestamp, and an artifact reference where available. These fields support
+traceability; the project does not claim universal cryptographic provenance.
+
+## Persistence and reports
+
+Project metadata is committed through a temporary file and `.bak` fallback.
+Large module, function, memory, and runtime tables are stored as local,
+self-contained HTML artifacts. Reports do not fetch scripts, fonts, or data
+from a CDN.
+
+## Execution boundaries
+
+- Unicorn is bounded CPU emulation with selected Win32 HLE.
+- Host process inspection is read-oriented and capability gated.
+- Driver runtime analysis is isolated to QEMU.
+- QEMU bases are restored and treated as immutable; guest writes go to
+  overlays.
+- GuestAgent telemetry is associated with a per-session nonce.
+
+## Future presentation layer
+
+```text
+        Dracula Core
+             │
+    Application Services
+       /             \
+      /               \
+    CLI          Local Web GUI
+    now              planned
+```
+
+The planned web frontend is intended for CFGs, call graphs, large tables,
+memory maps, runtime timelines, project browsing, evidence relationships,
+QEMU state, and artifacts. It will not move analysis logic into the browser.

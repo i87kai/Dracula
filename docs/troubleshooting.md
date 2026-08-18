@@ -1,42 +1,89 @@
-# Troubleshooting & Diagnostics
+# Troubleshooting
 
-Common issues, diagnostics, and remediation steps when running Dracula.
+## `drac` is not found
 
----
+Open a new terminal after installation, then:
 
-## 1. Terminal Display & Unicode Artifacts
+```powershell
+where.exe drac
+[Environment]::GetEnvironmentVariable('Path', 'User')
+```
 
-### Issue: Terminal displays broken characters or misaligned boxes
-* **Cause**: The terminal host does not support UTF-8 Braille glyphs (U+2800–U+28FF) or ANSI truecolor escape sequences.
-* **Remediation**:
-  - Use **Windows Terminal** or **VS Code Integrated Terminal**.
-  - Launch with `--no-unicode` to force ASCII box drawings:
-    ```powershell
-    drac --no-unicode
-    ```
-  - Launch with `--no-color` to disable ANSI colors:
-    ```powershell
-    drac --no-color
-    ```
+The expected entry is `<install>\bin`. Re-run `scripts\install.ps1` with the
+same `-InstallRoot` to repair the PATH entry.
 
----
+## Bootstrap or update rejects a checksum
 
-## 2. Command Palette / Execution Errors
+Do not bypass verification. Delete the downloaded files and obtain both assets
+again from the same GitHub release. The ZIP and `.sha256` filenames must match.
 
-### Issue: "file does not exist: --pid 1234"
-* **Remediation**: Use `/process attach <pid>` instead of `/target --pid <pid>`.
+`<install>\logs\last-update.json` records whether a staged transaction
+installed or rolled back.
 
-### Issue: Permission Denied during `/process attach`
-* **Cause**: Target process is running at higher integrity level (Administrator / SYSTEM) or protected by Antivirus/EDR.
-* **Remediation**: Run PowerShell / Terminal as Administrator before attaching.
+## PowerShell script policy blocks installation
 
----
+Use a policy allowed by your organization. For a local extracted release, the
+process-scoped form is:
 
-## 3. QEMU Sandbox Failures
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
 
-### Issue: "QEMU binary not found"
-* **Cause**: `qemu-system-x86_64.exe` is not installed or not in PATH.
-* **Remediation**: Install QEMU for Windows and add its directory to your system PATH, or place it inside `<InstallRoot>\tools\qemu\`.
+Group Policy can still override this setting.
 
-### Issue: Stale or locked overlay files
-* **Remediation**: Run `/sandbox overlays clean` or `/sandbox reset`.
+## Terminal characters are broken
+
+Use Windows Terminal or force fallbacks:
+
+```powershell
+drac --no-unicode
+drac --no-color
+```
+
+The compact fallback contains no Braille artwork.
+
+## Process attachment is denied
+
+The target may run at a higher integrity level, be protected, or have exited.
+Try a benign process at the same integrity level first. Elevation should be
+used only when the authorized target requires it.
+
+## Managed host is unavailable
+
+Verify the .NET 10 runtime and packaged host:
+
+```powershell
+dotnet --list-runtimes
+Get-ChildItem <install>\bin\Dracula.ManagedHost.*
+```
+
+Repair from the matching release if the host files are missing.
+
+## QEMU is unavailable
+
+`/sandbox status` reports the paths it tested. Dracula expects
+`qemu-system-x86_64.exe` and `qemu-img.exe` in the configured tool location or
+PATH. A VM package and restored base are separate requirements.
+
+## Overlays remain after an interrupted run
+
+```text
+/sandbox overlays
+/sandbox overlays clean
+```
+
+Cleanup intentionally refuses an overlay whose owner QEMU PID is still alive.
+Use `/sandbox reset` only after confirming the active analysis can stop.
+
+## Submodule build fails
+
+```powershell
+git submodule status
+git submodule update --init --recursive
+```
+
+For MinGW, verify Git for Windows and its shell:
+
+```powershell
+Test-Path "$env:ProgramFiles\Git\bin\sh.exe"
+```
