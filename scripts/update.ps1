@@ -8,7 +8,7 @@ param(
     [string]$InstallRoot,
     [ValidateSet('stable', 'prerelease')]
     [string]$Channel = 'stable',
-    [string]$ReleasesApiUrl = 'https://api.github.com/repos/i87kxxz/Dracula/releases',
+    [string]$ReleasesApiUrl = 'https://api.github.com/repos/i87kai/Dracula/releases',
     [string]$ReleaseMetadataPath,
     [switch]$Force,
     [switch]$Quiet,
@@ -16,7 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Repo = 'i87kxxz/Dracula'
+$Repo = 'i87kai/Dracula'
 
 function Write-Step { param([string]$Text) if (-not $Quiet) { Write-Host "  $Text" -ForegroundColor Gray } }
 function Write-Ok   { param([string]$Text) if (-not $Quiet) { Write-Host "  + $Text" -ForegroundColor Green } }

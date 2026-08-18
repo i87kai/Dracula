@@ -20,7 +20,7 @@ compact build checks that the command exists but does not query a package.
 ## Clone
 
 ```powershell
-git clone --recurse-submodules https://github.com/i87kxxz/Dracula.git
+git clone --recurse-submodules https://github.com/i87kai/Dracula.git
 cd Dracula
 ```
 

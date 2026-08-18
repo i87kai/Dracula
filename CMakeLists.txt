@@ -3,12 +3,12 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.3.2 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.3.3 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-18")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
-set(DRACULA_GITHUB_REPO "i87kxxz/Dracula")
-set(DRACULA_GITHUB_URL "https://github.com/i87kxxz/Dracula")
+set(DRACULA_GITHUB_REPO "i87kai/Dracula")
+set(DRACULA_GITHUB_URL "https://github.com/i87kai/Dracula")
 
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/common/version.h.in

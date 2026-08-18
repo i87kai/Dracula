@@ -9,7 +9,7 @@ lines may no longer receive fixes.
 
 Do not open a public issue for a suspected Dracula vulnerability. Use the
 repository's [private vulnerability reporting
-page](https://github.com/i87kxxz/Dracula/security/advisories/new) when it is
+page](https://github.com/i87kai/Dracula/security/advisories/new) when it is
 available. If private reporting is unavailable, open a public issue containing
 only a request for a private contact channel and no sensitive technical detail.
 

@@ -3,6 +3,18 @@
 This file records public release changes. The historical plain-text changelog
 remains available in [`CHANGELOG.txt`](CHANGELOG.txt).
 
+## 1.3.3 - 2026-08-18
+
+### Changed
+
+- Migrated all current public repository, release, bootstrap, and updater URLs
+  to `i87kai/Dracula` after the ownership transfer.
+
+### Verified
+
+- Confirmed `/about` and the native and PowerShell updaters use the new
+  `i87kai/Dracula` repository metadata.
+
 ## 1.3.2 - 2026-08-18
 
 ### Changed

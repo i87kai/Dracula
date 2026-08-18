@@ -14,7 +14,7 @@ active project's target rather than requiring the same path or PID each time.
 ## Install and launch
 
 ```powershell
-irm https://raw.githubusercontent.com/i87kxxz/Dracula/main/scripts/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/i87kai/Dracula/main/scripts/bootstrap.ps1 | iex
 ```
 
 Open a fresh terminal after installation:

@@ -165,7 +165,7 @@ location with real free-space figures, creates the workspace, and adds `drac`
 to the per-user PATH.
 
 ```powershell
-irm https://raw.githubusercontent.com/i87kxxz/Dracula/main/scripts/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/i87kai/Dracula/main/scripts/bootstrap.ps1 | iex
 ```
 
 No Administrator privileges are required for the default per-user location.
@@ -178,7 +178,7 @@ drac
 ### Manual release installation
 
 1. Download the Windows x64 ZIP and matching `.sha256` file from the
-   [latest release](https://github.com/i87kxxz/Dracula/releases/latest).
+   [latest release](https://github.com/i87kai/Dracula/releases/latest).
 2. Verify the archive before extracting it:
 
    ```powershell
@@ -343,7 +343,7 @@ Planned and experimental work is separated from implemented behavior in the
 Clone the pinned dependencies, configure, build, and test:
 
 ```powershell
-git clone --recurse-submodules https://github.com/i87kxxz/Dracula.git
+git clone --recurse-submodules https://github.com/i87kai/Dracula.git
 cd Dracula
 cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 4

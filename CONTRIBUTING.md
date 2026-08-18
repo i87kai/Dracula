@@ -22,7 +22,7 @@ toolchain notes.
 ## Build and test
 
 ```powershell
-git clone --recurse-submodules https://github.com/i87kxxz/Dracula.git
+git clone --recurse-submodules https://github.com/i87kai/Dracula.git
 cd Dracula
 cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 4

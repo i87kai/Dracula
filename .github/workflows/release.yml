@@ -68,6 +68,6 @@ jobs:
             dist/*.sha256
           draft: false
           prerelease: false
-          body_path: docs/releases/v1.3.2.md
+          body_path: docs/releases/v1.3.3.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

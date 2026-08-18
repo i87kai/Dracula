@@ -4,7 +4,7 @@ param(
     [string]$RepoRoot,
     [Parameter(Mandatory = $true)]
     [string]$BuildDir,
-    [string]$ExpectedVersion = '1.3.2'
+    [string]$ExpectedVersion = '1.3.3'
 )
 
 $ErrorActionPreference = 'Stop'

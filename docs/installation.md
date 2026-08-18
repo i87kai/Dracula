@@ -6,7 +6,7 @@ Administrator privileges at the default location.
 ## Web bootstrap
 
 ```powershell
-irm https://raw.githubusercontent.com/i87kxxz/Dracula/main/scripts/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/i87kai/Dracula/main/scripts/bootstrap.ps1 | iex
 ```
 
 The bootstrap:
@@ -33,7 +33,7 @@ drac --about
 ## Manual ZIP installation
 
 Download the two matching assets from the
-[latest release](https://github.com/i87kxxz/Dracula/releases/latest), then:
+[latest release](https://github.com/i87kai/Dracula/releases/latest), then:
 
 ```powershell
 $zip = Get-Item .\Dracula-v*-windows-x64.zip
@@ -136,7 +136,7 @@ an allowed signed/policy-controlled PowerShell host or the explicit
 process-scoped alternative approved by your organization:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/i87kxxz/Dracula/main/scripts/bootstrap.ps1 | iex"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/i87kai/Dracula/main/scripts/bootstrap.ps1 | iex"
 ```
 
 For an already extracted release:
