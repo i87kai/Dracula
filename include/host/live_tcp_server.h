@@ -30,6 +30,12 @@ namespace Sandbox {
         void SetPortRequest(const PortRequest& request) { m_portRequest = request; }
         const PortRequest& GetPortRequest() const { return m_portRequest; }
 
+        // Session Nonce Configuration for Authenticated GuestAgent Association
+        void SetExpectedSessionNonce(const std::string& nonce) { m_expectedNonce = nonce; }
+        const std::string& GetExpectedSessionNonce() const { return m_expectedNonce; }
+        bool IsSessionAuthenticated() const { return m_isAuthenticated.load(); }
+        std::string GetAuthenticatedNonce() const { return m_authenticatedNonce; }
+
         // Bind, listen and begin accepting in a background thread. On failure
         // no socket is left open and LastError() explains why.
         bool Start(LiveEventCallback callback, const TraceOptions& options);
@@ -68,10 +74,13 @@ namespace Sandbox {
         PortRequest       m_portRequest;
         LiveEventCallback m_callback;
         std::string       m_lastError;
+        std::string       m_expectedNonce;
+        std::string       m_authenticatedNonce;
 
         std::atomic<bool>     m_isRunning{false};
         std::atomic<bool>     m_isConnected{false};
         std::atomic<bool>     m_everConnected{false};
+        std::atomic<bool>     m_isAuthenticated{false};
         std::atomic<uint16_t> m_actualPort{0};
         std::atomic<uint64_t> m_eventsReceived{0};
         std::atomic<uint64_t> m_bytesReceived{0};

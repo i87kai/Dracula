@@ -165,6 +165,8 @@ namespace Sandbox {
         handoff.sessionId = std::to_string(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
+        handoff.sessionNonce = GenerateCryptographicNonce();
+        m_tcpServer->SetExpectedSessionNonce(handoff.sessionNonce);
 
         std::error_code tempEc;
         std::filesystem::path tempRoot = std::filesystem::temp_directory_path(tempEc) / "Dracula";

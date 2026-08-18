@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <random>
+#include <iomanip>
 
 namespace Sandbox {
 
@@ -23,6 +25,17 @@ namespace Sandbox {
         }
     }
 
+    std::string GenerateCryptographicNonce() {
+        std::random_device rd;
+        std::mt19937_64 gen1(rd());
+        std::mt19937_64 gen2(rd());
+        uint64_t part1 = gen1();
+        uint64_t part2 = gen2();
+        std::ostringstream ss;
+        ss << std::hex << std::setfill('0') << std::setw(16) << part1 << std::setw(16) << part2;
+        return ss.str();
+    }
+
     std::string GuestSessionHandoff::ToIni() const {
         std::ostringstream ss;
         ss << "; Dracula sandbox session handoff\n"
@@ -30,6 +43,7 @@ namespace Sandbox {
            << "; learn which host port to dial. Do not edit by hand.\n"
            << "[Session]\n"
            << "session_id = " << sessionId << "\n"
+           << "session_nonce = " << sessionNonce << "\n"
            << "host_ip = " << hostIp << "\n"
            << "host_port = " << hostPort << "\n"
            << "target = " << targetFileName << "\n"
@@ -66,6 +80,8 @@ namespace Sandbox {
                 }
             } else if (key == "session_id") {
                 out.sessionId = value;
+            } else if (key == "session_nonce") {
+                out.sessionNonce = value;
             } else if (key == "target") {
                 out.targetFileName = value;
             } else if (key == "timeout_seconds") {
@@ -99,17 +115,12 @@ namespace Sandbox {
             // CRLF so the file is readable by the guest's cmd.exe `for /f` parsing.
             const std::string ini = handoff.ToIni();
             for (char c : ini) {
-                if (c == '\n') file << '\r';
-                file << c;
-            }
-            file.flush();
-            if (!file) {
-                outError = "failed while writing " + path.string();
-                return false;
+                if (c == '\n') file.put('\r');
+                file.put(c);
             }
             return true;
         } catch (const std::exception& ex) {
-            outError = std::string("could not write the session handoff: ") + ex.what();
+            outError = ex.what();
             return false;
         }
     }
@@ -118,9 +129,9 @@ namespace Sandbox {
         std::ifstream file(filePath, std::ios::binary);
         if (!file.is_open()) return false;
 
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        return GuestSessionHandoff::FromIni(buffer.str(), out);
+        std::string content((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+        return GuestSessionHandoff::FromIni(content, out);
     }
 
 } // namespace Sandbox

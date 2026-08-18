@@ -728,6 +728,167 @@ static void TestNoContentionWithQemu() {
     Check(IsPortAvailable(bound), "The port is released after the session ends");
 }
 
+static void TestSessionNonceAuthentication() {
+    Section("9. GuestAgent Session Nonce Authentication & Association");
+
+    const std::string validNonce = GenerateCryptographicNonce();
+    Check(!validNonce.empty() && validNonce.size() == 32, "Generated 128-bit cryptographic nonce: " + validNonce);
+
+    // Case 1: Correct Nonce -> Accepted
+    {
+        LiveTcpServer server("127.0.0.1", 0);
+        PortRequest req;
+        req.strategy = PortStrategy::Ephemeral;
+        server.SetPortRequest(req);
+        server.SetExpectedSessionNonce(validNonce);
+
+        std::atomic<bool> authenticatedEvt{false};
+        TraceOptions opts;
+        server.Start([&](const TraceEvent& evt) {
+            if (evt.category == "Handshake") authenticatedEvt = true;
+        }, opts);
+
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in saddr{};
+        saddr.sin_family = AF_INET;
+        saddr.sin_port = htons(server.ActualPort());
+        inet_pton(AF_INET, "127.0.0.1", &saddr.sin_addr);
+        connect(sock, reinterpret_cast<sockaddr*>(&saddr), sizeof(saddr));
+
+        TraceEvent hs;
+        hs.category = "Handshake";
+        hs.details = "Nonce:" + validNonce;
+        hs.message = "Authenticated Guest Session";
+        std::string payload = Protocol::SerializeEvent(hs);
+        Protocol::PacketHeader hdr{};
+        hdr.magic = Protocol::MAGIC_HEADER;
+        hdr.payloadLength = static_cast<uint32_t>(payload.size());
+        std::vector<uint8_t> buf(sizeof(hdr) + payload.size());
+        std::memcpy(buf.data(), &hdr, sizeof(hdr));
+        std::memcpy(buf.data() + sizeof(hdr), payload.data(), payload.size());
+        send(sock, reinterpret_cast<const char*>(buf.data()), static_cast<int>(buf.size()), 0);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        Check(server.IsSessionAuthenticated(), "Correct nonce -> Session AUTHENTICATED");
+        Check(server.GetAuthenticatedNonce() == validNonce, "Authenticated nonce matches expected");
+
+        closesocket(sock);
+        server.Stop();
+    }
+
+    // Case 2: Wrong Nonce -> Rejected
+    {
+        LiveTcpServer server("127.0.0.1", 0);
+        PortRequest req;
+        req.strategy = PortStrategy::Ephemeral;
+        server.SetPortRequest(req);
+        server.SetExpectedSessionNonce(validNonce);
+
+        TraceOptions opts;
+        server.Start([](const TraceEvent&) {}, opts);
+
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in saddr{};
+        saddr.sin_family = AF_INET;
+        saddr.sin_port = htons(server.ActualPort());
+        inet_pton(AF_INET, "127.0.0.1", &saddr.sin_addr);
+        connect(sock, reinterpret_cast<sockaddr*>(&saddr), sizeof(saddr));
+
+        TraceEvent hs;
+        hs.category = "Handshake";
+        hs.details = "Nonce:wrong_nonce_invalid_value_00000";
+        std::string payload = Protocol::SerializeEvent(hs);
+        Protocol::PacketHeader hdr{};
+        hdr.magic = Protocol::MAGIC_HEADER;
+        hdr.payloadLength = static_cast<uint32_t>(payload.size());
+        std::vector<uint8_t> buf(sizeof(hdr) + payload.size());
+        std::memcpy(buf.data(), &hdr, sizeof(hdr));
+        std::memcpy(buf.data() + sizeof(hdr), payload.data(), payload.size());
+        send(sock, reinterpret_cast<const char*>(buf.data()), static_cast<int>(buf.size()), 0);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        Check(!server.IsSessionAuthenticated(), "Wrong nonce -> Session REJECTED");
+
+        closesocket(sock);
+        server.Stop();
+    }
+
+    // Case 3: Missing Nonce -> Rejected
+    {
+        LiveTcpServer server("127.0.0.1", 0);
+        PortRequest req;
+        req.strategy = PortStrategy::Ephemeral;
+        server.SetPortRequest(req);
+        server.SetExpectedSessionNonce(validNonce);
+
+        TraceOptions opts;
+        server.Start([](const TraceEvent&) {}, opts);
+
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in saddr{};
+        saddr.sin_family = AF_INET;
+        saddr.sin_port = htons(server.ActualPort());
+        inet_pton(AF_INET, "127.0.0.1", &saddr.sin_addr);
+        connect(sock, reinterpret_cast<sockaddr*>(&saddr), sizeof(saddr));
+
+        TraceEvent ev;
+        ev.category = "Process";
+        ev.message = "Arbitrary unauthenticated message";
+        std::string payload = Protocol::SerializeEvent(ev);
+        Protocol::PacketHeader hdr{};
+        hdr.magic = Protocol::MAGIC_HEADER;
+        hdr.payloadLength = static_cast<uint32_t>(payload.size());
+        std::vector<uint8_t> buf(sizeof(hdr) + payload.size());
+        std::memcpy(buf.data(), &hdr, sizeof(hdr));
+        std::memcpy(buf.data() + sizeof(hdr), payload.data(), payload.size());
+        send(sock, reinterpret_cast<const char*>(buf.data()), static_cast<int>(buf.size()), 0);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        Check(!server.IsSessionAuthenticated(), "Missing nonce -> Session REJECTED");
+
+        closesocket(sock);
+        server.Stop();
+    }
+
+    // Case 4: Stale Previous Nonce -> Rejected
+    {
+        const std::string staleNonce = "old_stale_nonce_session_12345678";
+        LiveTcpServer server("127.0.0.1", 0);
+        PortRequest req;
+        req.strategy = PortStrategy::Ephemeral;
+        server.SetPortRequest(req);
+        server.SetExpectedSessionNonce(validNonce);
+
+        TraceOptions opts;
+        server.Start([](const TraceEvent&) {}, opts);
+
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in saddr{};
+        saddr.sin_family = AF_INET;
+        saddr.sin_port = htons(server.ActualPort());
+        inet_pton(AF_INET, "127.0.0.1", &saddr.sin_addr);
+        connect(sock, reinterpret_cast<sockaddr*>(&saddr), sizeof(saddr));
+
+        TraceEvent hs;
+        hs.category = "Handshake";
+        hs.details = "Nonce:" + staleNonce;
+        std::string payload = Protocol::SerializeEvent(hs);
+        Protocol::PacketHeader hdr{};
+        hdr.magic = Protocol::MAGIC_HEADER;
+        hdr.payloadLength = static_cast<uint32_t>(payload.size());
+        std::vector<uint8_t> buf(sizeof(hdr) + payload.size());
+        std::memcpy(buf.data(), &hdr, sizeof(hdr));
+        std::memcpy(buf.data() + sizeof(hdr), payload.data(), payload.size());
+        send(sock, reinterpret_cast<const char*>(buf.data()), static_cast<int>(buf.size()), 0);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        Check(!server.IsSessionAuthenticated(), "Stale previous nonce -> Session REJECTED");
+
+        closesocket(sock);
+        server.Stop();
+    }
+}
+
 int main() {
 #ifdef _WIN32
     SetConsoleOutputCP(65001);
@@ -746,6 +907,7 @@ int main() {
     TestQemuCommandLine();
     TestConfiguration();
     TestNoContentionWithQemu();
+    TestSessionNonceAuthentication();
 
     std::cout << "\n\033[1;35m==============================================================\033[0m\n";
     std::cout << " SANDBOX NETWORK RESULTS: \033[1;32m" << g_pass << " PASSED\033[0m, "

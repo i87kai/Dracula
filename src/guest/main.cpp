@@ -45,6 +45,7 @@ int main(int argc, char* argv[]) {
     // The host picks its port at runtime and may not get the configured one, so
     // it leaves a handoff file on the shared drive. An explicit --host-port
     // still wins, which keeps a guest provisioned with a fixed port working.
+    std::string handoffNonce;
     if (!portFromArgs) {
         const char* candidateDrives[] = { "E:\\", "D:\\", "F:\\", "G:\\", "." };
         for (const char* drive : candidateDrives) {
@@ -53,6 +54,7 @@ int main(int argc, char* argv[]) {
             if (Sandbox::ReadGuestSessionHandoff(path, handoff)) {
                 hostIp = handoff.hostIp;
                 hostPort = handoff.hostPort;
+                handoffNonce = handoff.sessionNonce;
                 std::cout << "[GuestAgent] Read session handoff from " << path
                           << " (host " << hostIp << ":" << hostPort << ")" << std::endl;
                 break;
@@ -84,6 +86,10 @@ int main(int argc, char* argv[]) {
 
         emitter.SendEvent(evt);
     };
+
+    if (!handoffNonce.empty()) {
+        emitTrace(Sandbox::EventType::Info, "Handshake", "Session Nonce Authentication", "Nonce:" + handoffNonce);
+    }
 
     emitTrace(Sandbox::EventType::Info, "GuestAgent", "Guest Agent started execution of: " + targetExe);
 

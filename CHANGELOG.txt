@@ -1,4 +1,15 @@
 ============================================================
+Dracula v1.2.4
+Release: 2026-08-18
+============================================================
+
+Added
+-----
+- Host <-> GuestAgent Session Identity: 128-bit cryptographically random session nonce generation, temporary handoff propagation, GuestAgent initial protocol handshake transmission, and strict host-side validation (with deterministic rejection of wrong, missing, and stale nonces).
+- Live QEMU Post-Launch Controlled Failure Test: Verified clean abort, QEMU process termination, immediate socket and port release, temporary directory cleanup, and 100% base disk immutability upon GuestAgent timeout.
+- Telemetry Accounting and Verification: Audited transport frames, decoded TraceEvents, accepted UTR events, and EvidenceGraph nodes with complete lifecycle accounting.
+
+============================================================
 Dracula v1.2.3
 Release: 2026-08-18
 ============================================================

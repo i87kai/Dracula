@@ -184,6 +184,20 @@ namespace Sandbox {
 
                 TraceEvent event;
                 if (Protocol::DeserializeEvent(payload, event)) {
+                    if (!m_expectedNonce.empty() && !m_isAuthenticated.load()) {
+                        const bool hasNonce = (event.details == "Nonce:" + m_expectedNonce) ||
+                                              (event.details.find(m_expectedNonce) != std::string::npos) ||
+                                              (event.message.find(m_expectedNonce) != std::string::npos);
+                        if (hasNonce) {
+                            m_isAuthenticated = true;
+                            m_authenticatedNonce = m_expectedNonce;
+                        } else {
+                            m_lastError = "Unauthorized GuestAgent: session nonce mismatch";
+                            m_isAuthenticated = false;
+                            break;
+                        }
+                    }
+
                     m_eventsReceived++;
                     if (m_callback) {
                         m_callback(event);
