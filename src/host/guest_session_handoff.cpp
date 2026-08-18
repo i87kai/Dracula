@@ -5,8 +5,14 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <random>
 #include <iomanip>
+#include <stdexcept>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <bcrypt.h>
+#endif
 
 namespace Sandbox {
 
@@ -26,13 +32,37 @@ namespace Sandbox {
     }
 
     std::string GenerateCryptographicNonce() {
-        std::random_device rd;
-        std::mt19937_64 gen1(rd());
-        std::mt19937_64 gen2(rd());
-        uint64_t part1 = gen1();
-        uint64_t part2 = gen2();
+        // This nonce authenticates a guest session to its host listener, so it
+        // must come from a real CSPRNG. It previously came from two Mersenne
+        // Twisters seeded from std::random_device: MT19937 is a predictable
+        // generator whose internal state can be recovered from its output, and
+        // std::random_device is not guaranteed to be non-deterministic. Neither
+        // is acceptable for a value labelled cryptographic.
+        uint8_t bytes[16] = {0};
+        bool filled = false;
+
+#ifdef _WIN32
+        // BCRYPT_USE_SYSTEM_PREFERRED_RNG uses the OS CSPRNG without having to
+        // open an algorithm provider handle.
+        if (BCryptGenRandom(nullptr, bytes, sizeof(bytes),
+                            BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0) {
+            filled = true;
+        }
+#endif
+
+        if (!filled) {
+            // No silent downgrade to a weak generator: a caller that cannot get
+            // real entropy must find out, not receive a guessable nonce.
+            throw std::runtime_error(
+                "the platform cryptographic RNG is unavailable; refusing to "
+                "generate a session nonce from a non-cryptographic source");
+        }
+
         std::ostringstream ss;
-        ss << std::hex << std::setfill('0') << std::setw(16) << part1 << std::setw(16) << part2;
+        ss << std::hex << std::setfill('0');
+        for (uint8_t b : bytes) {
+            ss << std::setw(2) << static_cast<unsigned>(b);
+        }
         return ss.str();
     }
 

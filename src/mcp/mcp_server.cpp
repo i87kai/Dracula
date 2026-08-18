@@ -276,15 +276,25 @@ namespace Dracula {
                 // A PID arrives as a NUMBER in its own field. There is no
                 // "path or --pid string" to disambiguate, so the old class of
                 // bug is unrepresentable through this interface.
-                const std::string pidField = ExtractJsonField(requestJson, "pid");
-                if (!pidField.empty()) {
-                    uint32_t pid = 0;
+                // ExtractJsonInt accepts an unquoted JSON number, which is how
+                // a well-formed client sends a PID. ExtractJsonField only ever
+                // matches quoted strings, so a quoted "pid" is accepted too.
+                const int pidNumber = ExtractJsonInt(requestJson, "pid", 0);
+                const std::string pidString = ExtractJsonField(requestJson, "pid");
+
+                uint32_t pid = 0;
+                if (pidNumber > 0) {
+                    pid = static_cast<uint32_t>(pidNumber);
+                } else if (!pidString.empty()) {
                     try {
-                        pid = static_cast<uint32_t>(std::stoul(pidField));
+                        pid = static_cast<uint32_t>(std::stoul(pidString));
                     } catch (...) {
                         return "{\"jsonrpc\":\"2.0\",\"id\":" + id +
                                ",\"error\":{\"code\":-32602,\"message\":\"'pid' must be a number\"}}";
                     }
+                }
+
+                if (pid != 0) {
                     return RenderCommandResult(App::ProjectService::Instance().AttachProcess(pid));
                 }
 

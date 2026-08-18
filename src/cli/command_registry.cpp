@@ -694,14 +694,19 @@ namespace Dracula {
         Register({
             .name = "analyze",
             .aliases = {"a"},
-            .description = "Analyze a PE using the complete Dracula pipeline",
-            .usage = "/analyze <file>",
+            .description = "Run an analysis pass over the active project",
+            .usage = "/analyze [quick|deep|runtime|full] | /analyze <file>",
             .category = "Analysis",
-            .detailedHelp = "Runs complete static inspection, entropy profiling, Capstone disassembly, CFG generation, and Unicorn 2 CPU emulation on target PE.",
-            .examples = {"/analyze samples\\test_sample.exe", "/analyze target.dll"},
+            .detailedHelp = "Runs static inspection, entropy profiling, Capstone disassembly, CFG "
+                            "generation and Unicorn emulation over the ACTIVE PROJECT. Naming a file "
+                            "opens (or continues) its project first, so the target never has to be "
+                            "repeated on later commands. Quick and Deep use the project's static "
+                            "backing image; Runtime uses an already-authorized live target.",
+            .examples = {"/analyze", "/analyze quick", "/analyze deep", "/analyze full",
+                         "/analyze samples\\test_sample.exe"},
             .takesFilePath = true,
-            .requiresArgs = true,
-            .argCompletions = {},
+            .requiresArgs = false,
+            .argCompletions = {"quick", "deep", "runtime", "full"},
             .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
                 shell.HandleAnalyze(args);
             }

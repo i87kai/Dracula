@@ -181,7 +181,16 @@ namespace App {
         }
     }
 
+    void ProjectManager::EnsureIndexLoaded() const {
+        if (m_indexLoaded) return;
+        // LoadIndex takes the lock itself, so this must run before any caller
+        // acquires it.
+        std::string error;
+        const_cast<ProjectManager*>(this)->LoadIndex(error);
+    }
+
     std::vector<ProjectIndexEntry> ProjectManager::ListProjects() const {
+        EnsureIndexLoaded();
         std::lock_guard<std::mutex> lock(m_mutex);
         std::vector<ProjectIndexEntry> copy = m_index;
         // Most recently used first -- that is the order both /project list and
@@ -194,6 +203,7 @@ namespace App {
     }
 
     std::vector<ProjectIndexEntry> ProjectManager::FindBySha256(const std::string& sha256) const {
+        EnsureIndexLoaded();
         std::lock_guard<std::mutex> lock(m_mutex);
         std::vector<ProjectIndexEntry> hits;
         if (sha256.empty()) return hits;
@@ -204,6 +214,7 @@ namespace App {
     }
 
     std::optional<ProjectIndexEntry> ProjectManager::Resolve(const std::string& idOrName) const {
+        EnsureIndexLoaded();
         std::lock_guard<std::mutex> lock(m_mutex);
         if (idOrName.empty()) return std::nullopt;
 

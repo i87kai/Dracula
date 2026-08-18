@@ -291,6 +291,28 @@ int main() {
         Check(pm.ListProjects().size() == 1, "deletion persisted across reload");
     }
 
+    // --- Lookups work before any listing (regression) -----------------------
+    // A command that resolves a project before anything has listed one -- for
+    // example "/session delete <id>" as the very first command of a session --
+    // must still find it. The index has to load lazily on lookup, not only on
+    // an explicit list.
+    {
+        auto freshSample = WriteFixture(samples, "lazy_index.exe", "lazy-index-contents");
+        auto created = pm.CreateFromFile(freshSample);
+        Check(created.Ok(), "project created for the lazy-index check");
+        const std::string lazyId = created.Value().project->Id();
+
+        // Simulate a brand-new process: drop every trace of a loaded index.
+        pm.CloseActive();
+        ProjectManager fresh;
+        Check(fresh.Resolve(lazyId).has_value(),
+              "Resolve() loads the index on first use, with no prior list call");
+        Check(!fresh.ListProjects().empty(),
+              "ListProjects() works on a manager that was never explicitly loaded");
+        Check(!fresh.FindBySha256(created.Value().project->Target().sha256).empty(),
+              "FindBySha256() works without an explicit load");
+    }
+
     // --- Deletion refuses paths outside the projects root -------------------
     {
         auto missing = pm.DeleteProject("no-such-project");

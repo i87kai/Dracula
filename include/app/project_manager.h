@@ -59,6 +59,11 @@ namespace App {
         // Path of the durable index: <InstallRoot>\config\projects.json
         std::string IndexPath() const;
         bool LoadIndex(std::string& error);
+
+        // Loads the index on first use. Every lookup calls this before taking
+        // the lock, so a command that runs before any listing (for example
+        // /session delete as the very first command) still resolves projects.
+        void EnsureIndexLoaded() const;
         bool SaveIndex(std::string& error) const;
         std::vector<ProjectIndexEntry> ListProjects() const;
 
@@ -97,8 +102,8 @@ namespace App {
                                              const std::string& stableId) const;
 
         mutable std::mutex m_mutex;
-        std::vector<ProjectIndexEntry> m_index;
-        bool m_indexLoaded = false;
+        mutable std::vector<ProjectIndexEntry> m_index;
+        mutable bool m_indexLoaded = false;
         std::shared_ptr<Project> m_active;
     };
 

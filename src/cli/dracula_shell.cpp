@@ -932,14 +932,58 @@ namespace Dracula {
     // ─── Analysis ───────────────────────────────────────────────────────────
 
     void DraculaShell::HandleAnalyze(const std::vector<std::string>& args) {
-        std::string file = ResolveTargetFile(args, 0);
-        if (file.empty()) {
-            const auto* def = Cmd("analyze");
-            if (def) {
-                Ui::MissingArgument(*def, "Missing target binary.",
-                                    "Pass a path to a PE file to start a session.");
+        // Analysis modes (section 19). They operate on the active project and
+        // never require the target path to be repeated. The heavy lifting stays
+        // in the orchestrator -- no analysis logic is duplicated here.
+        static const std::vector<std::string> kModes = {"quick", "deep", "runtime", "full"};
+
+        std::string mode = "deep";
+        std::vector<std::string> pathArgs = args;
+
+        if (!args.empty()) {
+            const std::string first = args[0];
+            if (std::find(kModes.begin(), kModes.end(), first) != kModes.end()) {
+                mode = first;
+                pathArgs.erase(pathArgs.begin());
             }
+        }
+
+        // A named file opens (or continues) its project, so subsequent
+        // commands inherit the target without it being restated.
+        if (!pathArgs.empty() && pathArgs[0].rfind("-", 0) != 0) {
+            auto opened = App::ProjectService::Instance().OpenFile(pathArgs[0]);
+            if (!opened.ok) {
+                RenderResult(opened);
+                return;
+            }
+        }
+
+        std::string file = ResolveTargetFile(pathArgs, 0);
+        if (file.empty()) {
+            App::ErrorDetail e;
+            auto project = App::ProjectManager::Instance().Active();
+            if (project) {
+                e = App::CapabilityError(*project, "Analysis",
+                        "The project has no readable image to analyze.");
+            } else {
+                e = App::NoActiveProjectError();
+            }
+            RenderResult(App::CommandResult::Failure(e));
             return;
+        }
+
+        if (mode == "runtime") {
+            auto project = App::ProjectManager::Instance().Active();
+            if (!project || !project->Target().IsLiveProcess()) {
+                App::ErrorDetail e;
+                e.code = "no_live_target";
+                e.message = "Runtime analysis needs a live target.";
+                e.reason = "This project has no running process attached.";
+                e.remediation = "Attach one with /process attach <pid>, or use /analyze deep "
+                                "for static analysis.";
+                RenderResult(App::CommandResult::Failure(e));
+                return;
+            }
         }
 
         auto val = InputValidator::ValidateFile(file);
@@ -948,10 +992,11 @@ namespace Dracula {
             return;
         }
 
-        Ui::Info("Running the Dracula pipeline on " + file);
+        Ui::Info("Running the " + mode + " pipeline on " + file);
 
         OrchestratorOptions opts;
-        opts.enableEmulation = true;
+        // Quick skips emulation; the deeper passes keep it on.
+        opts.enableEmulation = (mode != "quick");
         auto res = m_orchestrator.AnalyzeFile(file, opts);
 
         if (res.threatLevel == "N/A" || (!res.threatReasoning.empty() && res.threatReasoning[0].rfind("PE Parser Error:", 0) == 0)) {
@@ -963,7 +1008,17 @@ namespace Dracula {
         m_activeFile = file;
         m_sessionResult = std::make_unique<UnifiedAnalysisResult>(std::move(res));
         std::cout << m_sessionResult->ToAnsiSummary();
-        Ui::Success("Active sample set to " + file);
+
+        // The result belongs to the project, so it survives exit alongside
+        // everything else the project holds (section 35).
+        auto project = App::ProjectManager::Instance().Active();
+        if (project) {
+            std::string saveError;
+            project->Save(saveError);
+            Ui::Success("Analysis stored in project '" + project->DisplayName() + "'.");
+        } else {
+            Ui::Success("Active sample set to " + file);
+        }
     }
 
     void DraculaShell::HandleEmulate(const std::vector<std::string>& args) {

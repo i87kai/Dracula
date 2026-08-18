@@ -1384,23 +1384,25 @@ static void TestCommandSubmissionAndEnterHandling() {
               "Buffer preserves full command and arguments");
     }
 
-    // 5. Palette open on command requiring arguments (/analyze)
+    // 5. Palette open on a command that still requires arguments (/scan).
+    // /analyze is no longer one of them: in v1.3.0 it runs against the active
+    // project, so it is legitimately valid with no argument at all.
     {
         LineEditor editor;
         editor.ResetBuffer();
-        editor.InsertString("/analyze");
-        Check(editor.IsPaletteActive(), "Typing '/analyze' leaves palette open on analyze");
+        editor.InsertString("/scan");
+        Check(editor.IsPaletteActive(), "Typing '/scan' leaves palette open on scan");
 
         InputEvent enterEv{Key::Enter};
         auto firstEnter = editor.HandleKey(enterEv);
         Check(firstEnter == LineEditor::EditAction::Continue,
               "First Enter on argument-requiring command accepts command name with trailing space");
-        Check(editor.GetBuffer() == "/analyze ",
-              "Buffer is now '/analyze ' ready for argument input");
+        Check(editor.GetBuffer() == "/scan ",
+              "Buffer is now '/scan ' ready for argument input");
         Check(!editor.IsPaletteActive(), "Palette closes after accepting command");
 
         editor.InsertString("samples\\test_sample.exe");
-        Check(editor.GetBuffer() == "/analyze samples\\test_sample.exe",
+        Check(editor.GetBuffer() == "/scan samples\\test_sample.exe",
               "Arguments typed after acceptance");
 
         auto secondEnter = editor.HandleKey(enterEv);

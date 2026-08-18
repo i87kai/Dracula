@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.2.4 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.3.0 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-18")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
@@ -159,7 +159,7 @@ target_link_libraries(DraculaCore PUBLIC
 )
 
 if(WIN32)
-    target_link_libraries(DraculaCore PUBLIC ws2_32 iphlpapi psapi crypt32 dbghelp ole32 oleaut32)
+    target_link_libraries(DraculaCore PUBLIC ws2_32 iphlpapi psapi crypt32 bcrypt dbghelp ole32 oleaut32)
 endif()
 
 if(MINGW OR MSYS)
@@ -201,7 +201,7 @@ set(GUEST_SOURCES
 )
 add_executable(GuestAgent ${GUEST_SOURCES})
 if(WIN32)
-    target_link_libraries(GuestAgent PRIVATE ws2_32 iphlpapi)
+    target_link_libraries(GuestAgent PRIVATE ws2_32 iphlpapi bcrypt)
 endif()
 
 # ─── Benign Anti-Evasion Probe Samples ──────────────────────────────────────
