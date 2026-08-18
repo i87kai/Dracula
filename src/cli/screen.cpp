@@ -333,25 +333,125 @@ namespace Dracula {
         m_sink.reset();
     }
 
-    void InteractiveScreen::SetSelectionMode(bool enable) {
-        if (m_selectionMode == enable) return;
-        m_selectionMode = enable;
-        Console::SetSelectionMode(enable);
+    // --- Text selection ---------------------------------------------------
+    //
+    // Dracula tracks the selection itself. The console keeps ENABLE_MOUSE_INPUT
+    // for the whole session, so the wheel never stops scrolling, and there is
+    // no mode to enter or leave in order to copy.
 
-        // Leaving selection mode repaints from scratch: the terminal's own
-        // selection highlight may have been drawn over any row.
-        if (!enable) Invalidate();
+    void InteractiveScreen::BeginSelection(int row, int column) {
+        const Rect& out = m_layout.output;
+        // Only the output region is selectable; a click on the header or the
+        // prompt simply clears any existing selection.
+        if (out.Empty() || row < out.top || row >= out.Bottom()) {
+            ClearSelection();
+            return;
+        }
+
+        m_selAnchorRow = row;
+        m_selAnchorCol = column;
+        m_selCursorRow = row;
+        m_selCursorCol = column;
+        m_selecting = true;
+    }
+
+    void InteractiveScreen::ExtendSelection(int row, int column) {
+        if (!m_selecting || m_selAnchorRow < 0) return;
+
+        const Rect& out = m_layout.output;
+        if (out.Empty()) return;
+
+        // Clamp to the output region so dragging past its edge selects to the
+        // boundary instead of losing the drag.
+        if (row < out.top) row = out.top;
+        if (row >= out.Bottom()) row = out.Bottom() - 1;
+
+        m_selCursorRow = row;
+        m_selCursorCol = column;
+    }
+
+    void InteractiveScreen::EndSelection() {
+        m_selecting = false;
+
+        // A click without a drag is a dismissal, not a zero-width selection.
+        if (m_selAnchorRow == m_selCursorRow && m_selAnchorCol == m_selCursorCol) {
+            ClearSelection();
+        }
+    }
+
+    void InteractiveScreen::ClearSelection() {
+        m_selAnchorRow = -1;
+        m_selCursorRow = -1;
+        m_selAnchorCol = 0;
+        m_selCursorCol = 0;
+        m_selecting = false;
+    }
+
+    bool InteractiveScreen::HasSelection() const {
+        return m_selAnchorRow >= 0 && m_selCursorRow >= 0 &&
+               !(m_selAnchorRow == m_selCursorRow && m_selAnchorCol == m_selCursorCol);
+    }
+
+    bool InteractiveScreen::SelectionBounds(int& startRow, int& startCol,
+                                            int& endRow, int& endCol) const {
+        if (!HasSelection()) return false;
+
+        startRow = m_selAnchorRow;
+        startCol = m_selAnchorCol;
+        endRow = m_selCursorRow;
+        endCol = m_selCursorCol;
+
+        // Normalize so the caller always walks forwards.
+        if (endRow < startRow || (endRow == startRow && endCol < startCol)) {
+            std::swap(startRow, endRow);
+            std::swap(startCol, endCol);
+        }
+        return true;
+    }
+
+    std::string InteractiveScreen::SelectedText() const {
+        int startRow = 0, startCol = 0, endRow = 0, endCol = 0;
+        if (!SelectionBounds(startRow, startCol, endRow, endCol)) return "";
+
+        std::string text;
+        for (int row = startRow; row <= endRow; ++row) {
+            if (row < 0 || row >= static_cast<int>(m_plainRows.size())) continue;
+
+            const std::string& line = m_plainRows[static_cast<size_t>(row)];
+            const int lineLen = static_cast<int>(line.size());
+
+            // A multi-row selection takes whole lines except at its two ends.
+            int from = (row == startRow) ? startCol : 0;
+            int to   = (row == endRow) ? endCol : lineLen;
+
+            from = std::max(0, std::min(from, lineLen));
+            to   = std::max(0, std::min(to, lineLen));
+            if (to <= from) {
+                if (row != endRow) text += "\n";
+                continue;
+            }
+
+            std::string piece = line.substr(static_cast<size_t>(from),
+                                            static_cast<size_t>(to - from));
+            // Trailing padding is layout, not content.
+            while (!piece.empty() && piece.back() == ' ') piece.pop_back();
+
+            text += piece;
+            if (row != endRow) text += "\n";
+        }
+        return text;
+    }
+
+    bool InteractiveScreen::CopySelection() {
+        const std::string text = SelectedText();
+        if (text.empty()) return false;
+        return Console::CopyToClipboard(text);
     }
 
     void InteractiveScreen::End() {
         if (!m_active) { RestoreStreams(); return; }
         RestoreStreams();
-        // Never leave the console in selection mode - the next program to run
-        // would inherit a half-configured input mode.
-        if (m_selectionMode) {
-            m_selectionMode = false;
-            Console::SetSelectionMode(false);
-        }
+        ClearSelection();
         Console::EnableInteractiveInput(false);
         Console::ShowCursor();
         Console::LeaveAlternateScreen();
@@ -454,14 +554,69 @@ namespace Dracula {
             }
         }
 
-        // Output viewport, wrapped for the current width.
+        // Output viewport, wrapped for the current width. One extra column is
+        // reserved on the right for the scrollbar track so text never collides
+        // with it.
         const int outputWidth =
-            std::max(m_layout.output.width - static_cast<int>(kIndent) - 1, 10);
+            std::max(m_layout.output.width - static_cast<int>(kIndent) - 2, 10);
         {
-            const auto rows = m_output.VisibleRows(m_layout.output.height, outputWidth);
-            for (size_t i = 0; i < rows.size(); ++i) {
-                put(m_layout.output.top + static_cast<int>(i),
-                    std::string(kIndent, ' ') + rows[i]);
+            const int viewportRows = m_layout.output.height;
+            const auto rows = m_output.VisibleRows(viewportRows, outputWidth);
+
+            // Scrollbar geometry. The track occupies the rightmost cell of the
+            // output region and is drawn whenever the history exceeds one
+            // viewport, so the user can always see where they are.
+            const size_t totalLines = m_output.LineCount();
+            const bool scrollable = totalLines > static_cast<size_t>(viewportRows);
+
+            int thumbTop = 0, thumbSize = 0;
+            if (scrollable && viewportRows > 0) {
+                // Thumb size is proportional to the visible fraction, with a
+                // one-row floor so it never vanishes on a long history.
+                thumbSize = std::max(1, static_cast<int>(
+                    (static_cast<double>(viewportRows) / static_cast<double>(totalLines)) *
+                    viewportRows));
+                thumbSize = std::min(thumbSize, viewportRows);
+
+                const size_t firstVisible = m_output.FirstVisible(viewportRows, outputWidth);
+                const size_t maxFirst = totalLines > static_cast<size_t>(viewportRows)
+                                      ? totalLines - static_cast<size_t>(viewportRows) : 0;
+                const double progress = maxFirst > 0
+                    ? static_cast<double>(firstVisible) / static_cast<double>(maxFirst) : 1.0;
+
+                thumbTop = static_cast<int>(progress * (viewportRows - thumbSize) + 0.5);
+                thumbTop = std::max(0, std::min(thumbTop, viewportRows - thumbSize));
+            }
+
+            const std::string trackGlyph = Terminal::UnicodeEnabled() ? "\xe2\x94\x82" : "|";
+            const std::string thumbGlyph = Terminal::UnicodeEnabled() ? "\xe2\x96\x88" : "#";
+            const std::string barDim = Terminal::Color(ColorRole::Border);
+            const std::string barLit = Terminal::Color(ColorRole::Accent);
+
+            m_plainRows.assign(static_cast<size_t>(H), std::string());
+
+            for (int i = 0; i < viewportRows; ++i) {
+                const int row = m_layout.output.top + i;
+                std::string body = (static_cast<size_t>(i) < rows.size())
+                                 ? rows[static_cast<size_t>(i)] : std::string();
+
+                std::string line = std::string(kIndent, ' ') + body;
+
+                // Remember the escape-free text so a copied selection contains
+                // what the user saw and not a wall of colour codes.
+                if (row >= 0 && row < H) {
+                    m_plainRows[static_cast<size_t>(row)] = Text::StripAnsi(line);
+                }
+
+                if (scrollable) {
+                    // put() truncates to W-1 visible cells, so the text is
+                    // padded to W-2 and the bar occupies the final cell.
+                    const bool onThumb = (i >= thumbTop && i < thumbTop + thumbSize);
+                    line = Text::PadRight(line, static_cast<size_t>(std::max(W - 2, 0)));
+                    line += (onThumb ? barLit + thumbGlyph : barDim + trackGlyph) + reset;
+                }
+
+                put(row, line);
             }
         }
 
@@ -514,7 +669,20 @@ namespace Dracula {
                 m_output.VisibleRange(m_layout.output.height, outputWidth, first, last);
                 right = "output " + std::to_string(first) + "-" + std::to_string(last) +
                         " / " + std::to_string(m_output.LineCount());
-                if (!m_output.IsFollowing()) right += "   PageDown to follow";
+
+                // Scrolled back: report how much has arrived since, rather than
+                // yanking the viewport to the bottom under the user.
+                if (!m_output.IsFollowing()) {
+                    const size_t unseen = m_output.LineCount() > last
+                                        ? m_output.LineCount() - last : 0;
+                    const std::string arrow = Terminal::UnicodeEnabled() ? "\xe2\x86\x93" : "v";
+                    if (unseen > 0) {
+                        right = arrow + " " + std::to_string(unseen) + " new line" +
+                                (unseen == 1 ? "" : "s") + "   Ctrl+End for latest";
+                    } else {
+                        right += "   Ctrl+End for latest";
+                    }
+                }
             }
 
             // Session state earns the left of the strip; the standing hints only
@@ -525,24 +693,24 @@ namespace Dracula {
             // Two lengths of the same hint. The short form still names the key,
             // because a keybinding nobody can discover may as well not exist -
             // so it is the last thing dropped, not the first.
-            const std::string hints = m_selectionMode
-                ? "SELECT MODE" + sep + "drag to select, Enter or Ctrl+C to copy" +
-                  sep + "F2 to resume scrolling"
+            const bool selected = HasSelection();
+            const std::string hints = selected
+                ? std::string("Ctrl+C copies the selection") + sep + "click to dismiss"
                 : "/ browse commands" + sep + "PageUp / PageDown scroll" +
-                  sep + "F2 to select text";
-            const std::string hintsShort = m_selectionMode
-                ? "SELECT MODE" + sep + "F2 to resume"
-                : "F2 to select text";
+                  sep + "drag to select, Ctrl+C to copy";
+            const std::string hintsShort = selected
+                ? "Ctrl+C copies"
+                : "drag to select";
             const size_t rightBudget =
                 right.empty() ? inner
                               : (inner > Text::VisibleWidth(right) + 3
                                  ? inner - Text::VisibleWidth(right) - 3 : 0);
 
-            // While selecting, the mode notice is the important thing on the
-            // strip; normally the session state is.
-            std::string left = m_selectionMode ? hints : m_status;
-            const std::string secondary = m_selectionMode ? m_status : hints;
-            const std::string secondaryShort = m_selectionMode ? m_status : hintsShort;
+            // With an active selection the copy hint is the important thing on
+            // the strip; normally the session state is.
+            std::string left = selected ? hints : m_status;
+            const std::string secondary = selected ? m_status : hints;
+            const std::string secondaryShort = selected ? m_status : hintsShort;
 
             auto fits = [&](const std::string& tail) {
                 return !tail.empty() &&
@@ -568,14 +736,50 @@ namespace Dracula {
                                           inner - rightW) + right;
                 }
             }
-            // Selection mode is a state the user must not lose track of, so the
-            // strip is lifted out of the muted grey while it is active.
-            const std::string tone = m_selectionMode
+            // An active selection is a state the user must not lose track of,
+            // so the strip is lifted out of the muted grey while it lasts.
+            const std::string tone = selected
                                    ? Terminal::Color(ColorRole::Warning) : muted;
             put(m_layout.footer.top, std::string(kIndent, ' ') + tone + body + reset);
         }
 
         return frame;
+    }
+
+    void InteractiveScreen::ApplySelectionHighlight(std::vector<std::string>& frame) const {
+        int startRow = 0, startCol = 0, endRow = 0, endCol = 0;
+        if (!SelectionBounds(startRow, startCol, endRow, endCol)) return;
+
+        // Repaint the selected span from the stored plain text in reverse
+        // video. Rebuilding from plain text (rather than splicing into the
+        // coloured row) keeps the highlight rectangular and avoids having to
+        // parse escape sequences to find cell boundaries.
+        const std::string reverseOn = "\033[7m";
+        const std::string reverseOff = "\033[27m";
+        const std::string reset = Terminal::Color(ColorRole::Reset);
+
+        for (int row = startRow; row <= endRow; ++row) {
+            if (row < 0 || row >= static_cast<int>(frame.size())) continue;
+            if (row >= static_cast<int>(m_plainRows.size())) continue;
+
+            const std::string& plain = m_plainRows[static_cast<size_t>(row)];
+            if (plain.empty()) continue;
+
+            const int len = static_cast<int>(plain.size());
+            int from = (row == startRow) ? startCol : 0;
+            int to   = (row == endRow) ? endCol : len;
+
+            from = std::max(0, std::min(from, len));
+            to   = std::max(0, std::min(to, len));
+            if (to <= from) continue;
+
+            frame[static_cast<size_t>(row)] =
+                plain.substr(0, static_cast<size_t>(from)) +
+                reverseOn +
+                plain.substr(static_cast<size_t>(from), static_cast<size_t>(to - from)) +
+                reverseOff + reset +
+                plain.substr(static_cast<size_t>(to));
+        }
     }
 
     void InteractiveScreen::Render(const LineEditor& editor, const std::string& prompt) {
@@ -586,6 +790,10 @@ namespace Dracula {
         int cursorRow = m_layout.input.top;
         int cursorColumn = 0;
         auto frame = ComposeFrame(editor, prompt, cursorRow, cursorColumn);
+
+        // The highlight is applied to the composed frame, so a selection
+        // survives repaints instead of being wiped by them.
+        ApplySelectionHighlight(frame);
 
         // Dirty-row update: only rows whose content actually changed are
         // rewritten, so typing a character repaints one line and a wheel notch
@@ -621,22 +829,39 @@ namespace Dracula {
 
         InputEvent event;
         while (Console::ReadInput(event)) {
-            // While the user is selecting text, the frame must not change: a
-            // repaint would wipe the selection, and on Windows writing to the
-            // console while a selection is active blocks until it is released.
-            // So every key except the ones that end selection mode is swallowed
-            // here - that also stops a stray Enter from submitting a command the
-            // user cannot see.
-            if (m_selectionMode) {
-                if (event.key == Key::ToggleSelection || event.key == Key::Escape) {
-                    SetSelectionMode(false);
-                    Render(editor, prompt);
-                } else if (event.key == Key::Resize) {
-                    SetSelectionMode(false);
-                    Invalidate();
-                    Render(editor, prompt);
-                }
+            // Mouse selection is handled here rather than in the editor: it
+            // concerns screen geometry, which the editor knows nothing about.
+            // The frame keeps repainting throughout, because Dracula draws the
+            // highlight itself instead of relying on the console.
+            if (event.key == Key::MousePress) {
+                BeginSelection(event.mouseRow, event.mouseColumn);
+                Render(editor, prompt);
                 continue;
+            }
+            if (event.key == Key::MouseDrag) {
+                ExtendSelection(event.mouseRow, event.mouseColumn);
+                Render(editor, prompt);
+                continue;
+            }
+            if (event.key == Key::MouseRelease) {
+                EndSelection();
+                Render(editor, prompt);
+                continue;
+            }
+
+            // Ctrl+C copies when something is selected, and only falls through
+            // to "cancel the current line" when nothing is.
+            if (event.key == Key::CtrlC && HasSelection()) {
+                CopySelection();
+                ClearSelection();
+                Render(editor, prompt);
+                continue;
+            }
+
+            // Any other keystroke dismisses a stale selection so the highlight
+            // never lingers over text the user has moved past.
+            if (HasSelection() && event.key != Key::Resize) {
+                ClearSelection();
             }
 
             const auto action = editor.HandleKey(event);
@@ -676,10 +901,6 @@ namespace Dracula {
 
                 case LineEditor::EditAction::ScrollBottom:
                     m_output.ScrollToBottom();
-                    break;
-
-                case LineEditor::EditAction::ToggleSelection:
-                    SetSelectionMode(!m_selectionMode);
                     break;
 
                 case LineEditor::EditAction::ClearScreen:

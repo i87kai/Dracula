@@ -265,7 +265,8 @@ namespace Dracula {
             {"PageUp / PageDown", "Scroll the output region by a page"},
             {"Wheel",             "Scroll the output region"},
             {"Ctrl+Home / End",   "Jump to the oldest / newest output"},
-            {"F2",                "Release the mouse to select and copy text, and back"},
+            {"Drag",              "Select text (scrolling keeps working)"},
+            {"Ctrl+C",            "Copy the selection, or clear the input line"},
             {"Ctrl+L",            "Repaint the screen"},
         };
         size_t keyWidth = 0;
@@ -339,8 +340,8 @@ namespace Dracula {
             m_screen = &screen;
 
             std::string welcome = C(ColorRole::Muted) +
-                "Ready. PageUp / PageDown scroll this output region, "
-                "F2 releases the mouse so you can select and copy text." + R();
+                "Ready. Wheel and PageUp / PageDown scroll this output region; "
+                "drag to select and Ctrl+C to copy." + R();
             screen.Output().AppendLine("");
             screen.Output().AppendLine(welcome);
 

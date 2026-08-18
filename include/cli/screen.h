@@ -194,11 +194,26 @@ namespace Dracula {
         void Render(const LineEditor& editor, const std::string& prompt);
         void Invalidate();
 
-        // Selection mode: the mouse belongs to the terminal so the user can
-        // select and copy. The frame is deliberately frozen while it is on -
-        // any repaint would wipe the selection out from under them.
-        void SetSelectionMode(bool enable);
-        bool InSelectionMode() const { return m_selectionMode; }
+        // --- Text selection ------------------------------------------------
+        // Dracula owns selection rather than delegating to the console's
+        // quick-edit mode, so the wheel keeps scrolling the viewport while the
+        // mouse is free to select. There is no mode to enter or leave.
+        //
+        // Coordinates are absolute console cells; only cells inside the output
+        // region participate.
+        void BeginSelection(int row, int column);
+        void ExtendSelection(int row, int column);
+        void EndSelection();
+        void ClearSelection();
+        bool HasSelection() const;
+
+        // The selected text, with rows joined by newlines and trailing spaces
+        // trimmed. Empty when there is no selection.
+        std::string SelectedText() const;
+
+        // Copies the current selection to the clipboard. False when there is
+        // nothing selected or the clipboard could not be opened.
+        bool CopySelection();
 
         const ScreenLayout& Layout() const { return m_layout; }
         void Relayout(int suggestionCount);
@@ -231,11 +246,35 @@ namespace Dracula {
         int m_cachedHeaderWidth = -1;
         HeaderVariant m_cachedHeaderVariant = HeaderVariant::None;
 
+        // Applies the selection highlight to a composed frame. Kept separate
+        // from composition so PreviewFrame and the real paint share it.
+        void ApplySelectionHighlight(std::vector<std::string>& frame) const;
+
+        // Normalized selection bounds (start before end). Returns false when
+        // nothing is selected.
+        bool SelectionBounds(int& startRow, int& startCol,
+                             int& endRow, int& endCol) const;
+
         std::vector<std::string> m_lastFrame;
+
+        // Plain (escape-free) text of the last painted output region, indexed
+        // by absolute console row. Selection copies from this, so what lands on
+        // the clipboard is exactly what the user saw, without colour codes.
+        // Mutable because it is a by-product of composing a frame, which is
+        // logically a const operation.
+        mutable std::vector<std::string> m_plainRows;
+
         bool m_active = false;
-        bool m_selectionMode = false;
         int m_lastWidth = 0;
         int m_lastHeight = 0;
+
+        // Selection anchor and cursor, in absolute console cells. Row -1 means
+        // "no selection".
+        int  m_selAnchorRow = -1;
+        int  m_selAnchorCol = 0;
+        int  m_selCursorRow = -1;
+        int  m_selCursorCol = 0;
+        bool m_selecting = false;
     };
 
 } // namespace Dracula

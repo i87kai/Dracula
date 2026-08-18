@@ -272,6 +272,10 @@ namespace Dracula {
         return s_unicodeEnabled ? "⚠" : "!";
     }
 
+    bool Terminal::UnicodeEnabled() {
+        return s_unicodeEnabled;
+    }
+
     std::string Terminal::BoxH() {
         return s_unicodeEnabled ? "─" : "-";
     }
@@ -310,10 +314,6 @@ namespace Dracula {
     }
 
     // ─── Console redraw primitives ──────────────────────────────────────────
-
-    // Whether the mouse currently belongs to the terminal (selection) rather
-    // than to Dracula (wheel scrolling). See Console::SetSelectionMode.
-    static bool s_selectionMode = false;
 
     void Console::HideCursor() {
         if (!Terminal::IsInteractive()) return;
@@ -427,7 +427,6 @@ namespace Dracula {
             case VK_END:    out.key = ctrl ? Key::CtrlEnd  : Key::End;  return true;
             case VK_PRIOR:  out.key = Key::PageUp;    return true;
             case VK_NEXT:   out.key = Key::PageDown;  return true;
-            case VK_F2:     out.key = Key::ToggleSelection; return true;
             case VK_SHIFT:
             case VK_CONTROL:
             case VK_MENU:
@@ -507,43 +506,43 @@ namespace Dracula {
                   | ENABLE_QUICK_EDIT_MODE;
         }
         SetConsoleMode(hIn, mode);
-        s_selectionMode = false;
 #else
         (void)enable;
 #endif
     }
 
-    void Console::SetSelectionMode(bool enable) {
+    bool Console::CopyToClipboard(const std::string& text) {
 #ifdef _WIN32
-        HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-        if (hIn == INVALID_HANDLE_VALUE) return;
+        if (!OpenClipboard(nullptr)) return false;
 
-        DWORD mode = 0;
-        if (!GetConsoleMode(hIn, &mode)) return;
-
-        mode |= ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT;
-        if (enable) {
-            // Give the mouse back to the terminal. Wheel notches stop arriving
-            // as input events for as long as this lasts, which is precisely the
-            // trade the user asked for by pressing the key.
-            mode |= ENABLE_QUICK_EDIT_MODE;
-            mode &= ~static_cast<DWORD>(ENABLE_MOUSE_INPUT);
-        } else {
-            mode |= ENABLE_MOUSE_INPUT;
-            mode &= ~static_cast<DWORD>(ENABLE_QUICK_EDIT_MODE);
+        bool ok = false;
+        if (EmptyClipboard()) {
+            // Convert to UTF-16 so non-ASCII output copies correctly.
+            int wideLen = MultiByteToWideChar(CP_UTF8, 0, text.c_str(),
+                                              static_cast<int>(text.size()), nullptr, 0);
+            HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE,
+                                         (static_cast<size_t>(wideLen) + 1) * sizeof(wchar_t));
+            if (handle) {
+                auto* dest = static_cast<wchar_t*>(GlobalLock(handle));
+                if (dest) {
+                    if (wideLen > 0) {
+                        MultiByteToWideChar(CP_UTF8, 0, text.c_str(),
+                                            static_cast<int>(text.size()), dest, wideLen);
+                    }
+                    dest[wideLen] = L'\0';
+                    GlobalUnlock(handle);
+                    ok = SetClipboardData(CF_UNICODETEXT, handle) != nullptr;
+                }
+                // On success the clipboard owns the handle; on failure we do.
+                if (!ok) GlobalFree(handle);
+            }
         }
-        // Key events must keep arriving in both states, or the toggle would be
-        // one-way and the user would be stranded in selection mode.
-        mode &= ~static_cast<DWORD>(ENABLE_VIRTUAL_TERMINAL_INPUT);
-        mode &= ~static_cast<DWORD>(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
-
-        if (!SetConsoleMode(hIn, mode)) return;
+        CloseClipboard();
+        return ok;
+#else
+        (void)text;
+        return false;
 #endif
-        s_selectionMode = enable;
-    }
-
-    bool Console::InSelectionMode() {
-        return s_selectionMode;
     }
 
     bool Console::ReadInput(InputEvent& out) {
@@ -569,6 +568,7 @@ namespace Dracula {
             }
             if (record.EventType == MOUSE_EVENT) {
                 const auto& mouse = record.Event.MouseEvent;
+
                 if (mouse.dwEventFlags == MOUSE_WHEELED) {
                     // The high word of dwButtonState is a signed wheel delta;
                     // positive means the wheel rotated away from the user.
@@ -576,6 +576,28 @@ namespace Dracula {
                     out = InputEvent{};
                     out.key = delta > 0 ? Key::WheelUp : Key::WheelDown;
                     return true;
+                }
+
+                // Left-button press / drag / release drive Dracula's own text
+                // selection. Tracking it here (rather than delegating to the
+                // console's quick-edit mode) is what lets selection and wheel
+                // scrolling coexist without a mode key.
+                const bool leftDown = (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
+
+                if (mouse.dwEventFlags == 0 || mouse.dwEventFlags == MOUSE_MOVED) {
+                    out = InputEvent{};
+                    out.mouseRow = mouse.dwMousePosition.Y;
+                    out.mouseColumn = mouse.dwMousePosition.X;
+
+                    if (mouse.dwEventFlags == 0) {
+                        // A button state change.
+                        out.key = leftDown ? Key::MousePress : Key::MouseRelease;
+                        return true;
+                    }
+                    if (leftDown) {
+                        out.key = Key::MouseDrag;
+                        return true;
+                    }
                 }
                 continue;
             }

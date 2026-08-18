@@ -1139,8 +1139,14 @@ static void TestScrollKeyMapping() {
     Check(action(Key::CtrlHome)  == LineEditor::EditAction::ScrollTop,      "Ctrl+Home jumps to the oldest output");
     Check(action(Key::CtrlEnd)   == LineEditor::EditAction::ScrollBottom,   "Ctrl+End jumps to the newest output");
     Check(action(Key::Resize)    == LineEditor::EditAction::Resize,         "A resize event is surfaced to the screen");
-    Check(action(Key::ToggleSelection) == LineEditor::EditAction::ToggleSelection,
-          "F2 is surfaced to the screen as the selection-mode toggle");
+    // Mouse events go straight to the screen: selection is screen geometry,
+    // which the line editor knows nothing about.
+    Check(action(Key::MousePress)   == LineEditor::EditAction::Continue,
+          "A mouse press does not disturb the line editor");
+    Check(action(Key::MouseDrag)    == LineEditor::EditAction::Continue,
+          "A mouse drag does not disturb the line editor");
+    Check(action(Key::MouseRelease) == LineEditor::EditAction::Continue,
+          "A mouse release does not disturb the line editor");
 
     // Scrolling must never disturb the input buffer or the palette.
     editor.InsertString("/s");
@@ -1219,44 +1225,87 @@ static void TestSelectionMode() {
 
     auto frame = screen.PreviewFrame(120, 30, editor, prompt);
 
-    Check(!screen.InSelectionMode(), "The screen starts with the mouse bound to scrolling");
-    Check(Text::StripAnsi(frame[layout.footer.top]).find("F2") != std::string::npos,
-          "The footer advertises F2 even with a session summary competing for room");
+    // --- Selection is owned by Dracula, not by a console mode -----------
+    //
+    // The F2 mode is gone: the wheel keeps scrolling while the mouse selects,
+    // because Dracula tracks the selection itself.
 
-    // The toggle is pure UI state: nothing about the session may move.
+    Check(!screen.HasSelection(), "The screen starts with nothing selected");
+
+    const std::string footerText = Text::StripAnsi(frame[layout.footer.top]);
+    Check(footerText.find("F2") == std::string::npos,
+          "The footer no longer mentions F2 (the selection mode was removed)");
+    Check(footerText.find("select") != std::string::npos ||
+          footerText.find("Ctrl+C") != std::string::npos,
+          "The footer advertises how to select and copy");
+
+    // Selection must not disturb the session in any way.
     const std::string typed = editor.GetBuffer();
     const size_t scrolled = screen.Output().ScrollAnchor();
 
-    screen.SetSelectionMode(true);
-    auto selecting = screen.PreviewFrame(120, 30, editor, prompt);
+    // A press inside the output region starts a selection; a drag extends it.
+    const int outputRow = layout.output.top + 1;
+    screen.BeginSelection(outputRow, 4);
+    Check(!screen.HasSelection(), "A press alone selects nothing");
 
-    Check(screen.InSelectionMode(), "F2 enters selection mode");
-    Check(Text::StripAnsi(selecting[layout.footer.top]).find("SELECT MODE") != std::string::npos,
-          "The footer says SELECT MODE while the mouse belongs to the terminal");
-    Check(Text::StripAnsi(selecting[layout.footer.top]).find("copy") != std::string::npos,
-          "The footer says how to copy");
-    Check(editor.GetBuffer() == typed, "Entering selection mode does not touch the input buffer");
+    screen.ExtendSelection(outputRow, 20);
+    Check(screen.HasSelection(), "Dragging creates a selection");
+
+    screen.EndSelection();
+    Check(screen.HasSelection(), "Releasing after a drag keeps the selection");
+
+    Check(editor.GetBuffer() == typed, "Selecting does not touch the input buffer");
     Check(screen.Output().ScrollAnchor() == scrolled,
-          "Entering selection mode does not move the output viewport");
+          "Selecting does not move the output viewport");
 
-    // Everything above the footer is untouched, so a frozen frame really is the
-    // same frame the user is selecting from.
-    bool onlyFooterChanged = selecting.size() == frame.size();
-    for (size_t i = 0; i + 1 < selecting.size() && onlyFooterChanged; ++i) {
-        if (i == static_cast<size_t>(layout.footer.top)) continue;
-        if (selecting[i] != frame[i]) onlyFooterChanged = false;
+    // The selected text comes from the painted rows, free of colour codes.
+    screen.PreviewFrame(120, 30, editor, prompt);
+    Check(screen.SelectedText().find('\033') == std::string::npos,
+          "Selected text carries no escape sequences");
+
+    // Scrolling still works while a selection exists -- the whole point of
+    // removing the mode.
+    screen.Output().ScrollPageDown(layout.output.height);
+    Check(screen.HasSelection(),
+          "Scrolling does not destroy an active selection");
+
+    // A press outside the output region dismisses the selection.
+    screen.BeginSelection(layout.input.top, 2);
+    Check(!screen.HasSelection(), "Clicking outside the output region clears the selection");
+
+    screen.ClearSelection();
+    Check(!screen.HasSelection(), "ClearSelection clears the selection");
+
+    // A drag past the region edge is clamped rather than lost.
+    screen.BeginSelection(layout.output.top, 0);
+    screen.ExtendSelection(layout.output.Bottom() + 50, 10);
+    Check(screen.HasSelection(), "Dragging past the region edge still selects");
+    Check(screen.SelectedText().find('\033') == std::string::npos,
+          "A clamped selection still yields clean text");
+    screen.ClearSelection();
+
+    // A vertical scrollbar is drawn once the history exceeds one viewport.
+    {
+        screen.Output().ScrollToTop();
+        auto barFrame = screen.PreviewFrame(120, 30, editor, prompt);
+        const auto barLayout = screen.Layout();
+
+        if (screen.Output().LineCount() > static_cast<size_t>(barLayout.output.height)) {
+            bool sawBar = false;
+            for (int row = barLayout.output.top; row < barLayout.output.Bottom(); ++row) {
+                const std::string plain = Text::StripAnsi(barFrame[static_cast<size_t>(row)]);
+                if (plain.empty()) continue;
+                const char last = plain.back();
+                if (last == '|' || last == '#') { sawBar = true; break; }
+                if (plain.size() >= 3) {
+                    const std::string tail = plain.substr(plain.size() - 3);
+                    if (tail == "\u2502" || tail == "\u2588") { sawBar = true; break; }
+                }
+            }
+            Check(sawBar, "A vertical scrollbar is drawn when history exceeds the viewport");
+        }
+        screen.Output().ScrollToBottom();
     }
-    Check(onlyFooterChanged,
-          "Entering selection mode repaints the footer and nothing else");
-
-    screen.SetSelectionMode(false);
-    auto resumed = screen.PreviewFrame(120, 30, editor, prompt);
-    Check(!screen.InSelectionMode(), "F2 leaves selection mode");
-    Check(resumed[layout.footer.top] == frame[layout.footer.top],
-          "Leaving selection mode restores the ordinary footer");
-    Check(editor.GetBuffer() == typed, "Leaving selection mode does not touch the input buffer");
-    Check(screen.Output().ScrollAnchor() == scrolled,
-          "Leaving selection mode does not move the output viewport");
 }
 
 static void TestCommandSubmissionAndEnterHandling() {

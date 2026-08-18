@@ -43,6 +43,11 @@ namespace Dracula {
         static void SetColorEnabled(bool enabled);
         static void SetUnicodeEnabled(bool enabled);
 
+        // Whether box-drawing and arrow glyphs may be emitted. Callers that
+        // draw their own chrome (the scrollbar, the new-output arrow) need an
+        // ASCII fallback for consoles without a Unicode-capable font.
+        static bool UnicodeEnabled();
+
         // Terminal dimensions
         static int GetWidth();
         static int GetHeight();
@@ -108,13 +113,25 @@ namespace Dracula {
         CtrlA, CtrlC, CtrlD, CtrlE, CtrlK, CtrlL, CtrlU,
         CtrlHome, CtrlEnd,
         WheelUp, WheelDown,
-        ToggleSelection,   // F2: hand the mouse back to the terminal
+
+        // Mouse selection is handled by Dracula itself rather than by the
+        // terminal's quick-edit mode. That is what allows the wheel to scroll
+        // the output viewport AND the mouse to select text at the same time --
+        // Win32 makes those two mutually exclusive for the console, so the old
+        // build needed an F2 mode switch to trade one for the other.
+        MousePress, MouseDrag, MouseRelease,
+
         Resize
     };
 
     struct InputEvent {
         Key key = Key::None;
         std::string utf8;   // populated for Key::Char
+
+        // Console cell the mouse event occurred in (0-based). Only meaningful
+        // for MousePress / MouseDrag / MouseRelease.
+        int mouseRow = 0;
+        int mouseColumn = 0;
     };
 
     // ─── Centralized redraw primitives ──────────────────────────────────────
@@ -128,6 +145,10 @@ namespace Dracula {
     public:
         static void HideCursor();
         static void ShowCursor();
+
+        // Places text on the system clipboard. Used by Ctrl+C when a selection
+        // is active, so copying needs no mode switch.
+        static bool CopyToClipboard(const std::string& text);
 
         static void CarriageReturn();
         static void ClearLine();          // erase the entire current line
@@ -157,15 +178,6 @@ namespace Dracula {
         // wheel and resize notifications on, quick-edit selection and VT input
         // translation off (both of those corrupt the key stream).
         static void EnableInteractiveInput(bool enable);
-
-        // Selection mode. ENABLE_MOUSE_INPUT and ENABLE_QUICK_EDIT_MODE are
-        // mutually exclusive on Windows: an application that consumes mouse
-        // events takes click-drag selection away from the console. This hands the
-        // mouse back to the terminal so the user can select and copy, at the cost
-        // of wheel scrolling until it is switched off again. Key events keep
-        // arriving either way, so the toggle key still works.
-        static void SetSelectionMode(bool enable);
-        static bool InSelectionMode();
 
         // Reset colours, show the cursor and flush. Safe to call repeatedly.
         static void ResetStyle();
