@@ -22,6 +22,7 @@ jobs:
         with:
           platform: x64
           version: 13.2.0
+          static: 0
 
       - name: Setup CMake
         uses: jwlawson/actions-setup-cmake@v2
