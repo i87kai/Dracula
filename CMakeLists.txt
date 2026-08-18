@@ -338,6 +338,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_dracula_image PRIVATE DraculaCore)
     add_test(NAME DraculaImage COMMAND test_dracula_image)
 
+    # 10g. Terminal frame evidence tool. Renders real frames so the scrollback
+    # chrome can be inspected as output; not a pass/fail test.
+    add_executable(terminal_frame_evidence tests/terminal_frame_evidence.cpp)
+    target_link_libraries(terminal_frame_evidence PRIVATE DraculaCore)
+
     # 10f. LIVE QEMU acceptance. Built, but deliberately NOT registered with
     # ctest: it needs a real imported VM base and boots an actual guest. It
     # reports BLOCKED and exits zero when that environment is absent, so it can
