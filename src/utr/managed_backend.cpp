@@ -343,6 +343,33 @@ namespace UTR {
         return Result<std::vector<std::string>>::Success(strings);
     }
 
+    Result<std::vector<ManagedMethodInfo>> ManagedHostClient::ListAllMethods(const std::string& filePath) {
+        std::string params = "{\"path\":\"" + EscapeJson(filePath) + "\"}";
+        auto res = SendRequest("list_all_methods", params);
+        if (!res.Ok()) return Result<std::vector<ManagedMethodInfo>>::Fail(res.Error());
+
+        std::vector<ManagedMethodInfo> methods;
+        std::regex mRe("\\{\"type\":\"([^\"]+)\",\"method\":\"([^\"]+)\",\"rva\":\"([^\"]+)\",\"attributes\":\"([^\"]*)\",\"is_static\":(true|false),\"is_pinvoke\":(true|false),\"pinvoke_dll\":\"([^\"]*)\",\"pinvoke_entrypoint\":\"([^\"]*)\",\"il_size\":([0-9]+)");
+        std::string json = res.Value();
+        auto begin = std::sregex_iterator(json.begin(), json.end(), mRe);
+        auto end = std::sregex_iterator();
+        for (auto it = begin; it != end; ++it) {
+            std::smatch m = *it;
+            ManagedMethodInfo info;
+            info.type = m[1].str();
+            info.method = m[2].str();
+            info.rva = m[3].str();
+            info.attributes = m[4].str();
+            info.isStatic = (m[5].str() == "true");
+            info.isPInvoke = (m[6].str() == "true");
+            info.pinvokeDll = m[7].str();
+            info.pinvokeEntryPoint = m[8].str();
+            try { info.ilSize = std::stoul(m[9].str()); } catch (...) {}
+            methods.push_back(info);
+        }
+        return Result<std::vector<ManagedMethodInfo>>::Success(methods);
+    }
+
     Result<std::vector<ManagedPInvokeInfo>> ManagedHostClient::ListPInvokes(const std::string& filePath) {
         std::string params = "{\"path\":\"" + EscapeJson(filePath) + "\"}";
         auto res = SendRequest("list_pinvokes", params);

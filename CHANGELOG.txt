@@ -1,4 +1,16 @@
 ============================================================
+Dracula v1.2.1
+Release: 2026-08-18
+============================================================
+
+Added
+-----
+- Managed .NET Function Intelligence: Unified indexing of managed methods (`IndexManagedMethods`), tokens, IL body sizes, and P/Invoke targets into `FunctionIntelligenceManager` with investigation interest scoring.
+- In-Process Telemetry Agent Hardening: Custom Win32 telemetry agent with module enumeration, memory protection events, protocol negotiation, and dedicated test suite (`test_dracula_agent`).
+- DbgHelp Symbol Adapter: Clarified DbgHelp (`dbghelp.dll`) symbol resolution & memory reading separation from DbgEng/DIA.
+- Expanded MCP Autonomy Tools: Added `list_modules`, `get_findings`, `list_runtime_transformations`, `memory_compare`, `inspect_assembly`, `list_types`, `list_pinvokes`.
+
+============================================================
 Dracula v1.2.0
 Release: 2026-08-18
 ============================================================

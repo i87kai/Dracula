@@ -47,6 +47,8 @@ namespace UTR {
         std::vector<UtrRuntimeEvent> m_queuedEvents;
     };
 
+    // DbgHelp / DbgEng Process & Symbol Backend
+    // Implements: DbgHelp Symbol Resolution (SymInitialize, SymFromAddr, SymGetModuleInfo64) & Process Memory Reading (ReadProcessMemory)
     class DbgEngBackend {
     public:
         DbgEngBackend();
@@ -71,6 +73,9 @@ namespace UTR {
         bool     m_initialized = false;
         bool     m_attached = false;
     };
+
+    // Primary name representing the actual dbghelp.dll symbol & memory integration
+    using DbgHelpBackend = DbgEngBackend;
 
 } // namespace UTR
 } // namespace Dracula

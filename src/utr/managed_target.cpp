@@ -1,5 +1,6 @@
 #include "utr/target.h"
 #include "utr/managed_backend.h"
+#include "utr/function_intelligence.h"
 
 #include <iostream>
 #include <vector>
@@ -58,21 +59,32 @@ namespace UTR {
         }
 
         Result<std::vector<FunctionIntelligenceItem>> EnumerateFunctions() override {
-            auto typesRes = ManagedHostClient::Instance().ListTypes(m_info.path);
-            if (!typesRes.Ok()) return Result<std::vector<FunctionIntelligenceItem>>::Fail(typesRes.Error());
+            auto methodsRes = ManagedHostClient::Instance().ListAllMethods(m_info.path);
+            if (!methodsRes.Ok()) {
+                // Fallback to ListTypes if ListAllMethods encounters an error
+                auto typesRes = ManagedHostClient::Instance().ListTypes(m_info.path);
+                if (!typesRes.Ok()) return Result<std::vector<FunctionIntelligenceItem>>::Fail(typesRes.Error());
 
-            std::vector<FunctionIntelligenceItem> funcs;
-            for (const auto& type : typesRes.Value()) {
-                FunctionIntelligenceItem item;
-                item.name = type.fullName;
-                item.moduleName = m_info.name;
-                item.instructionCount = type.methodCount * 20;
-                item.basicBlockCount = type.methodCount * 3;
-                item.interestScore = (type.methodCount > 5) ? 60.0 : 30.0;
-                item.interestReasoning = "[Managed Type: " + type.fullName + "]";
-                funcs.push_back(item);
+                std::vector<FunctionIntelligenceItem> funcs;
+                for (const auto& type : typesRes.Value()) {
+                    FunctionIntelligenceItem item;
+                    item.name = type.fullName;
+                    item.moduleName = m_info.name;
+                    item.instructionCount = type.methodCount * 20;
+                    item.basicBlockCount = type.methodCount * 3;
+                    item.interestScore = (type.methodCount > 5) ? 60.0 : 30.0;
+                    item.interestReasoning = "[Managed Type: " + type.fullName + "]";
+                    funcs.push_back(item);
+                }
+                return Result<std::vector<FunctionIntelligenceItem>>::Success(funcs);
             }
-            return Result<std::vector<FunctionIntelligenceItem>>::Success(funcs);
+
+            auto pinvokesRes = ManagedHostClient::Instance().ListPInvokes(m_info.path);
+            std::vector<ManagedPInvokeInfo> pinvokes = pinvokesRes.Ok() ? pinvokesRes.Value() : std::vector<ManagedPInvokeInfo>{};
+
+            FunctionIntelligenceManager mgr;
+            mgr.IndexManagedMethods(methodsRes.Value(), pinvokes, m_info.name);
+            return Result<std::vector<FunctionIntelligenceItem>>::Success(mgr.GetAllFunctions());
         }
 
     private:

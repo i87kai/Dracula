@@ -71,6 +71,7 @@ namespace UTR {
         Result<ManagedAssemblyInfo> InspectAssembly(const std::string& filePath);
         Result<std::vector<ManagedTypeInfo>> ListTypes(const std::string& filePath);
         Result<ManagedMethodInfo> InspectMethod(const std::string& filePath, const std::string& typeName, const std::string& methodName);
+        Result<std::vector<ManagedMethodInfo>> ListAllMethods(const std::string& filePath);
         Result<std::vector<std::string>> ListStrings(const std::string& filePath);
         Result<std::vector<ManagedPInvokeInfo>> ListPInvokes(const std::string& filePath);
 

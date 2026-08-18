@@ -286,6 +286,134 @@ namespace Dracula {
                 return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(oss.str()) + "\"}]}}";
             }
 
+            if (toolName == "list_modules") {
+                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
+                auto mods = target->EnumerateModules();
+                if (!mods.Ok()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32002,\"message\":\"" + EscapeForJson(mods.Error()) + "\"}}";
+                std::ostringstream oss;
+                oss << "[";
+                for (size_t i = 0; i < mods.Value().size(); ++i) {
+                    const auto& m = mods.Value()[i];
+                    oss << "{\"name\":\"" << EscapeForJson(m.name) << "\",\"path\":\"" << EscapeForJson(m.path)
+                        << "\",\"base\":\"0x" << std::hex << m.baseAddress << std::dec << "\"}"
+                        << (i + 1 < mods.Value().size() ? "," : "");
+                }
+                oss << "]";
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(oss.str()) + "\"}]}}";
+            }
+
+            if (toolName == "get_findings") {
+                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
+                UTR::UtrOrchestratorOptions opts;
+                opts.level = UTR::AnalysisLevel::Quick;
+                auto res = UTR::UtrAnalysisOrchestrator::Instance().RunAnalysis(target, opts);
+                std::ostringstream oss;
+                oss << "[";
+                for (size_t i = 0; i < res.staticResult.findings.size(); ++i) {
+                    const auto& f = res.staticResult.findings[i];
+                    oss << "{\"id\":\"" << f.id << "\",\"title\":\"" << EscapeForJson(f.title)
+                        << "\",\"severity\":\"" << SeverityToString(f.severity)
+                        << "\",\"confidence\":\"" << ConfidenceToString(f.confidence)
+                        << "\",\"description\":\"" << EscapeForJson(f.description) << "\"}"
+                        << (i + 1 < res.staticResult.findings.size() ? "," : "");
+                }
+                oss << "]";
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(oss.str()) + "\"}]}}";
+            }
+
+            if (toolName == "list_runtime_transformations") {
+                auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";
+                auto memRes = target->GetMemoryMap();
+                if (!memRes.Ok()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32002,\"message\":\"" + EscapeForJson(memRes.Error()) + "\"}}";
+                UTR::MemoryIntelligenceManager mgr;
+                mgr.CaptureSnapshot(memRes.Value(), "Snap1");
+                mgr.CaptureSnapshot(memRes.Value(), "Snap2");
+                auto comp = mgr.CompareSnapshots(1, 2);
+                auto trans = mgr.DetectTransformations(comp);
+                std::ostringstream oss;
+                oss << "[";
+                for (size_t i = 0; i < trans.size(); ++i) {
+                    oss << "{\"id\":\"" << trans[i].id << "\",\"address\":\"0x" << std::hex << trans[i].regionAddress << std::dec
+                        << "\",\"size\":" << trans[i].regionSize << ",\"summary\":\"" << EscapeForJson(trans[i].assessmentSummary) << "\"}"
+                        << (i + 1 < trans.size() ? "," : "");
+                }
+                oss << "]";
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(oss.str()) + "\"}]}}";
+            }
+
+            if (toolName == "memory_compare") {
+                int snapA = ExtractJsonInt(requestJson, "snapshot_a", 1);
+                int snapB = ExtractJsonInt(requestJson, "snapshot_b", 2);
+                UTR::MemoryIntelligenceManager mgr;
+                auto comp = mgr.CompareSnapshots(snapA, snapB);
+                std::ostringstream oss;
+                oss << "{\"snapshot_a\":" << comp.snapshotA << ",\"snapshot_b\":" << comp.snapshotB
+                    << ",\"deltas_count\":" << comp.deltas.size()
+                    << ",\"transitions\":" << comp.protectionTransitionsCount << "}";
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(oss.str()) + "\"}]}}";
+            }
+
+            if (toolName == "inspect_assembly") {
+                std::string filePath = ExtractJsonField(requestJson, "file_path");
+                if (filePath.empty()) {
+                    auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                    if (target) filePath = target->GetInfo().path;
+                }
+                if (filePath.empty()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"Missing 'file_path' argument\"}}";
+                auto res = UTR::ManagedHostClient::Instance().InspectAssembly(filePath);
+                if (!res.Ok()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32002,\"message\":\"" + EscapeForJson(res.Error()) + "\"}}";
+                const auto& a = res.Value();
+                std::ostringstream oss;
+                oss << "{\"assembly_name\":\"" << EscapeForJson(a.assemblyName) << "\",\"version\":\"" << a.version
+                    << "\",\"types\":" << a.typeCount << ",\"methods\":" << a.methodCount
+                    << ",\"entry_point\":\"" << a.entryPoint << "\"}";
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(oss.str()) + "\"}]}}";
+            }
+
+            if (toolName == "list_types") {
+                std::string filePath = ExtractJsonField(requestJson, "file_path");
+                if (filePath.empty()) {
+                    auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                    if (target) filePath = target->GetInfo().path;
+                }
+                if (filePath.empty()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"Missing 'file_path' argument\"}}";
+                auto res = UTR::ManagedHostClient::Instance().ListTypes(filePath);
+                if (!res.Ok()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32002,\"message\":\"" + EscapeForJson(res.Error()) + "\"}}";
+                std::ostringstream oss;
+                oss << "[";
+                for (size_t i = 0; i < res.Value().size(); ++i) {
+                    const auto& t = res.Value()[i];
+                    oss << "{\"name\":\"" << EscapeForJson(t.fullName) << "\",\"base\":\"" << EscapeForJson(t.baseType)
+                        << "\",\"methods\":" << t.methodCount << "}" << (i + 1 < res.Value().size() ? "," : "");
+                }
+                oss << "]";
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(oss.str()) + "\"}]}}";
+            }
+
+            if (toolName == "list_pinvokes") {
+                std::string filePath = ExtractJsonField(requestJson, "file_path");
+                if (filePath.empty()) {
+                    auto target = UTR::TargetManager::Instance().GetActiveTarget();
+                    if (target) filePath = target->GetInfo().path;
+                }
+                if (filePath.empty()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"Missing 'file_path' argument\"}}";
+                auto res = UTR::ManagedHostClient::Instance().ListPInvokes(filePath);
+                if (!res.Ok()) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32002,\"message\":\"" + EscapeForJson(res.Error()) + "\"}}";
+                std::ostringstream oss;
+                oss << "[";
+                for (size_t i = 0; i < res.Value().size(); ++i) {
+                    const auto& p = res.Value()[i];
+                    oss << "{\"type\":\"" << EscapeForJson(p.type) << "\",\"method\":\"" << EscapeForJson(p.method)
+                        << "\",\"dll\":\"" << EscapeForJson(p.dll) << "\",\"entry_point\":\"" << EscapeForJson(p.entryPoint) << "\"}"
+                        << (i + 1 < res.Value().size() ? "," : "");
+                }
+                oss << "]";
+                return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeForJson(oss.str()) + "\"}]}}";
+            }
+
             if (toolName == "generate_report") {
                 auto target = UTR::TargetManager::Instance().GetActiveTarget();
                 if (!target) return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32001,\"message\":\"No active target loaded\"}}";

@@ -87,6 +87,8 @@ namespace UTR {
                 auto funcsRes = target->EnumerateFunctions();
                 if (funcsRes.Ok()) {
                     for (const auto& fn : funcsRes.Value()) {
+                        result.functionIntelligence.AddFunction(fn);
+
                         EvidenceNode node;
                         node.id = "MGD_" + fn.name;
                         node.category = "ManagedIntelligence";

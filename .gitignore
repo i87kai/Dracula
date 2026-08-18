@@ -2,6 +2,7 @@
 build/
 build_*/
 bin/
+obj/
 out/
 *.o
 *.obj

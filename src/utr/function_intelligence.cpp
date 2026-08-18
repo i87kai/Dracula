@@ -1,4 +1,5 @@
 #include "utr/function_intelligence.h"
+#include "utr/managed_backend.h"
 
 #include <algorithm>
 #include <sstream>
@@ -84,6 +85,56 @@ namespace UTR {
         ComputeRanking();
     }
 
+    void FunctionIntelligenceManager::IndexManagedMethods(
+        const std::vector<ManagedMethodInfo>& methods,
+        const std::vector<ManagedPInvokeInfo>& pinvokes,
+        const std::string& assemblyName)
+    {
+        (void)pinvokes;
+        for (const auto& m : methods) {
+            FunctionIntelligenceItem item;
+            item.name = m.type + "." + m.method;
+            item.moduleName = assemblyName.empty() ? "ManagedAssembly" : assemblyName;
+            item.instructionCount = m.ilSize;
+            item.basicBlockCount = (m.ilSize > 20) ? (m.ilSize / 15 + 1) : 1;
+            item.cyclomaticComplexity = (m.ilSize > 50) ? 4 : 1;
+
+            uint64_t rvaVal = 0;
+            try {
+                if (m.rva.rfind("0x", 0) == 0 || m.rva.rfind("0X", 0) == 0) {
+                    rvaVal = std::stoull(m.rva.substr(2), nullptr, 16);
+                } else if (!m.rva.empty()) {
+                    rvaVal = std::stoull(m.rva);
+                }
+            } catch (...) {}
+            item.rva = rvaVal;
+
+            item.tags.push_back("Managed");
+            item.tags.push_back(".NET");
+            item.tags.push_back(m.type);
+
+            if (m.isPInvoke) {
+                item.tags.push_back("PInvoke");
+                std::string api = m.pinvokeDll + "!" + m.pinvokeEntryPoint;
+                item.calledApis.push_back(api);
+                item.callsHighRiskApis = true;
+                item.interestScore += 35.0;
+                item.interestReasoning += "[P/Invoke Native Interop: " + api + "] ";
+            }
+
+            if (m.ilSize > 100) {
+                item.interestScore += 20.0;
+                item.interestReasoning += "[Substantial IL Body (" + std::to_string(m.ilSize) + " bytes)] ";
+            }
+
+            item.truthLevel = EvidenceTruthLevel::Observed;
+            item.confidence = FindingConfidence::High;
+            m_functions.push_back(item);
+        }
+
+        ComputeRanking();
+    }
+
     void FunctionIntelligenceManager::CorrelateRuntimeExecutions(
         const std::vector<uint64_t>& executedAddresses,
         const std::vector<HleCallRecord>& hleCalls)
@@ -91,6 +142,8 @@ namespace UTR {
         for (auto& fn : m_functions) {
             for (uint64_t addr : executedAddresses) {
                 if (addr == fn.address || addr == fn.rva) {
+                    fn.wasExecutedInRuntime = true;
+                    fn.runtimeExecutionCount++;
                     fn.executionCount++;
                 }
             }
@@ -101,6 +154,11 @@ namespace UTR {
             }
         }
 
+        ComputeRanking();
+    }
+
+    void FunctionIntelligenceManager::AddFunction(const FunctionIntelligenceItem& fn) {
+        m_functions.push_back(fn);
         ComputeRanking();
     }
 
@@ -119,7 +177,7 @@ namespace UTR {
             }
 
             // 2. Runtime Execution (max 25 pts)
-            if (fn.executionCount > 0) {
+            if (fn.executionCount > 0 || fn.wasExecutedInRuntime) {
                 score += weights.weightRuntimeExecution;
                 reason += "[Runtime Executed] ";
             }
@@ -138,7 +196,15 @@ namespace UTR {
                 score += weights.weightControlFlowComplexity * 0.5;
             }
 
-            // 5. Cross-reference centrality (max 10 pts)
+            // 5. Instruction Count (max 15 pts)
+            if (fn.instructionCount > 100) {
+                score += 15.0;
+                reason += "[Substantial Body (" + std::to_string(fn.instructionCount) + " instrs)] ";
+            } else if (fn.instructionCount > 30) {
+                score += 5.0;
+            }
+
+            // 6. Cross-reference centrality (max 10 pts)
             if (fn.callerCount > 5 || fn.calleeCount > 10) {
                 score += weights.weightXrefCentrality;
                 reason += "[Central Call Graph Node] ";

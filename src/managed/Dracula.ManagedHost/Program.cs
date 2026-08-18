@@ -182,6 +182,15 @@ namespace Dracula.ManagedHost
                     return ListPInvokes(reqId, path);
                 }
 
+                case "list_all_methods":
+                {
+                    if (!p.TryGetValue("path", out var pathElem))
+                        return ParamError(reqId, "path");
+
+                    string path = pathElem.GetString() ?? string.Empty;
+                    return ListAllMethods(reqId, path);
+                }
+
                 default:
                     return new JsonRpcResponse
                     {
@@ -575,6 +584,87 @@ namespace Dracula.ManagedHost
             catch (Exception ex)
             {
                 return new JsonRpcResponse { Id = reqId, Error = new { code = -32003, message = $"Failed to list P/Invokes: {ex.Message}" } };
+            }
+        }
+
+        static JsonRpcResponse ListAllMethods(string? reqId, string filePath)
+        {
+            if (!File.Exists(filePath))
+            {
+                return new JsonRpcResponse { Id = reqId, Error = new { code = -32001, message = $"File not found: {filePath}" } };
+            }
+
+            try
+            {
+                using var stream = File.OpenRead(filePath);
+                using var peReader = new PEReader(stream);
+                if (!peReader.HasMetadata)
+                {
+                    return new JsonRpcResponse { Id = reqId, Error = new { code = -32002, message = "Target lacks CLR metadata." } };
+                }
+
+                var mr = peReader.GetMetadataReader();
+                var methods = new List<object>();
+
+                foreach (var methodHandle in mr.MethodDefinitions)
+                {
+                    var methodDef = mr.GetMethodDefinition(methodHandle);
+                    var typeDef = mr.GetTypeDefinition(methodDef.GetDeclaringType());
+                    string ns = mr.GetString(typeDef.Namespace);
+                    string typeName = mr.GetString(typeDef.Name);
+                    string fullTypeName = string.IsNullOrEmpty(ns) ? typeName : $"{ns}.{typeName}";
+                    string methodName = mr.GetString(methodDef.Name);
+
+                    bool isPInvoke = (methodDef.Attributes & MethodAttributes.PinvokeImpl) != 0;
+                    string pinvokeDll = "";
+                    string pinvokeEntry = "";
+                    if (isPInvoke)
+                    {
+                        var import = methodDef.GetImport();
+                        pinvokeEntry = mr.GetString(import.Name);
+                        var modRef = mr.GetModuleReference(import.Module);
+                        pinvokeDll = mr.GetString(modRef.Name);
+                    }
+
+                    int rva = methodDef.RelativeVirtualAddress;
+                    int ilSize = 0;
+                    if (rva != 0)
+                    {
+                        try
+                        {
+                            var methodBody = peReader.GetMethodBody(rva);
+                            ilSize = methodBody.GetILBytes()?.Length ?? 0;
+                        }
+                        catch {}
+                    }
+
+                    methods.Add(new
+                    {
+                        type = fullTypeName,
+                        method = methodName,
+                        rva = $"0x{rva:X8}",
+                        attributes = methodDef.Attributes.ToString(),
+                        is_static = (methodDef.Attributes & MethodAttributes.Static) != 0,
+                        is_pinvoke = isPInvoke,
+                        pinvoke_dll = pinvokeDll,
+                        pinvoke_entrypoint = pinvokeEntry,
+                        il_size = ilSize
+                    });
+                }
+
+                return new JsonRpcResponse
+                {
+                    Id = reqId,
+                    Result = new
+                    {
+                        total_methods = methods.Count,
+                        methods = methods
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new JsonRpcResponse { Id = reqId, Error = new { code = -32003, message = $"Failed to list all methods: {ex.Message}" } };
             }
         }
     }

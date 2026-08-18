@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.2.0 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.2.1 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-18")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
@@ -318,6 +318,12 @@ if(BUILD_TESTS)
     add_executable(test_mcp_utr tests/test_mcp_utr.cpp)
     target_link_libraries(test_mcp_utr PRIVATE DraculaCore)
     add_test(NAME McpUtr COMMAND test_mcp_utr)
+
+    # 14. Dracula In-Process Telemetry Agent Suite
+    add_executable(test_dracula_agent tests/test_dracula_agent.cpp)
+    target_link_libraries(test_dracula_agent PRIVATE DraculaCore)
+    add_dependencies(test_dracula_agent DraculaAgent64)
+    add_test(NAME DraculaAgent COMMAND test_dracula_agent)
 endif()
 
 message(STATUS "")

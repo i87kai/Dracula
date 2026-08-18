@@ -14,6 +14,9 @@
 namespace Dracula {
 namespace UTR {
 
+    struct ManagedMethodInfo;
+    struct ManagedPInvokeInfo;
+
     // ─── Function Intelligence Item ────────────────────────────────────────────
     struct FunctionIntelligenceItem {
         uint64_t    rva = 0;
@@ -37,6 +40,8 @@ namespace UTR {
         bool        callsHighRiskApis = false;
 
         // Runtime metrics
+        bool        wasExecutedInRuntime = false;
+        uint32_t    runtimeExecutionCount = 0;
         uint32_t    executionCount = 0;
         uint32_t    threadCount = 0;
         uint32_t    memoryRegionsAllocated = 0;
@@ -77,9 +82,14 @@ namespace UTR {
                                   const std::vector<ImportEntry>& imports,
                                   const std::string& moduleName = "");
 
+        void IndexManagedMethods(const std::vector<ManagedMethodInfo>& methods,
+                                 const std::vector<ManagedPInvokeInfo>& pinvokes,
+                                 const std::string& assemblyName = "");
+
         void CorrelateRuntimeExecutions(const std::vector<uint64_t>& executedAddresses,
                                         const std::vector<HleCallRecord>& hleCalls);
 
+        void AddFunction(const FunctionIntelligenceItem& fn);
         void ComputeRanking(const FunctionRankingWeights& weights = {});
 
         const std::vector<FunctionIntelligenceItem>& GetAllFunctions() const { return m_functions; }
