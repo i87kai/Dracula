@@ -2,7 +2,7 @@
 
 A state-of-the-art, high-performance **C++20 Unified Target Runtime (UTR), CPU Emulator (Unicorn Engine 2), Capstone Disassembler, Safe PE Inspector, Control Flow Graph (CFG) Engine, Win32 High-Level Emulation (HLE) Environment, Memory Transformation Detector, Out-of-Process Managed (.NET) Host, Model Context Protocol (MCP) Server, and Dynamic Sandbox Suite**.
 
-Current Version: **`Dracula v1.2.0`** (Universal Target Runtime Milestone)  
+Current Version: **`Dracula v1.3.0`** (Project Workspace Milestone)  
 Centerpiece Executable: **`Dracula.exe`**
 
 ---
@@ -36,6 +36,73 @@ Centerpiece Executable: **`Dracula.exe`**
 
 ## 🚀 Quick Start
 
+### Install
+
+```powershell
+irm https://<host>/install.ps1 | iex
+```
+
+The installer lists your fixed disks with their real free space, lets you pick
+with the arrow keys, creates the workspace, and puts `drac` on your per-user
+PATH. Administrator is not required.
+
+From a local build instead:
+
+```powershell
+.\tools\install\Install-Dracula.ps1 -Source .\build
+```
+
+Then, in a new terminal:
+
+```powershell
+drac
+```
+
+Re-running the installer offers Repair / Update / Change location / Uninstall.
+Your projects are never destroyed.
+
+### Analyze something
+
+Dracula is **project-centric**. Opening a target creates a durable workspace
+that survives exit and is reopened later by ID or name.
+
+```
+drac
+
+  What do you want to analyze?
+
+  > Open File
+    Attach to Process
+    Open Existing Project
+```
+
+```
+/target D:\Downloads\sample.exe    create or continue a project for a file
+/process attach 17140              ... or for a running process
+
+/static                            analyze the project's image
+/dll windowscodecs.dll             correlate a loaded module with its file
+/memory snapshot before            capture memory state
+/memory compare before after       diff two snapshots
+/project storage                   measured disk usage
+/session delete <id>               remove the workspace (never your file)
+```
+
+A PID is recorded as a PID and its backing executable resolved separately, so
+`/static` works on a process project without reopening anything — and keeps
+working after the process exits.
+
+Large tables are written into the project as self-contained, searchable HTML
+rather than flooding the terminal.
+
+**See [`docs/WORKSPACE_GUIDE.md`](docs/WORKSPACE_GUIDE.md)** for installation,
+projects, sessions, the command hierarchy, `.draculaimg` VM packaging, the
+immutable VM base and overlay lifecycle, and the service architecture.
+
+> A **Local Web GUI is future work and is not included in this release.** The
+> engine/service boundary exists so it can be added later without changing an
+> analysis engine; the CLI will remain fully usable after it arrives.
+
 ### Build with CMake (MinGW-w64 or MSVC)
 
 ```powershell
@@ -56,17 +123,19 @@ Launch Dracula in interactive mode:
 .\build\Dracula.exe
 ```
 
-Inside the interactive shell:
-```
-┌─ Dracula ────────────────────────────────────────────────────────────┐
-│ Binary Intelligence & Reverse Engineering Platform                   │
-│ v1.0.0 (x86_64-w64-mingw32)                                          │
-│                                                                      │
-│ Capstone 5.0 • Unicorn 2 • Safe PE • Win32 HLE • CFG • MCP           │
-└──────────────────────────────────────────────────────────────────────┘
+Inside the interactive shell the header describes your work rather than the
+engine inventory:
 
-  Working directory: D:\Coding\python\AI\jew
-  Type / for command palette • /help for command reference
+```
+  Dracula  v1.3.0  •  x64  •  Release
+
+  Project windowscodecs  •  Target Native DLL - x64  •  Runtime Idle  •  Status Ready
+
+  Tip: /dll <name> correlates a loaded module with its on-disk image.
+```
+
+```
+  Type / for the command palette • /help for the full reference
 
 dracula ❯ /analyze samples\test_sample.exe
 dracula ❯ /security

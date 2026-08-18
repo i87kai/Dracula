@@ -338,6 +338,13 @@ if(BUILD_TESTS)
     target_link_libraries(test_dracula_image PRIVATE DraculaCore)
     add_test(NAME DraculaImage COMMAND test_dracula_image)
 
+    # 10f. LIVE QEMU acceptance. Built, but deliberately NOT registered with
+    # ctest: it needs a real imported VM base and boots an actual guest. It
+    # reports BLOCKED and exits zero when that environment is absent, so it can
+    # never be mistaken for a simulated pass.
+    add_executable(live_qemu_acceptance tests/live_qemu_acceptance.cpp)
+    target_link_libraries(live_qemu_acceptance PRIVATE DraculaCore)
+
     # 11. ManagedHost .NET 10 Out-of-Process Backend Suite
     add_executable(test_managed_backend tests/test_managed_backend.cpp)
     target_link_libraries(test_managed_backend PRIVATE DraculaCore)

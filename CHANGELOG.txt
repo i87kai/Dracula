@@ -1,4 +1,55 @@
 ============================================================
+Dracula v1.3.0
+Release: 2026-08-18
+============================================================
+
+Added
+-----
+- Durable Project Workspaces: Dracula is now project-centric. A project owns an immutable copy of the sample, its static and runtime artifacts, memory snapshots, reports and logs, survives process exit, and is reopened by ID or name. Every command resolves its subject from the active project instead of re-parsing a command string.
+- Application Service Layer: ProjectService, TargetService, StaticService, ProcessService, DllService, MemoryService, RuntimeService and SandboxService return structured CommandResult/DTO values containing no terminal formatting. The CLI is the only place those become coloured text, so a future presentation layer can call the same methods without touching an analysis engine.
+- Existing-Project Detection by Content: Reopening a sample is matched on SHA-256, not filename, and offers Continue vs. an independent new project.
+- Project Storage and Cleanup: /project storage reports measured on-disk usage by category; cleanup reclaims only disposable data (overlays, cache, intermediate dumps) and always retains the original sample, metadata, reports, retained snapshots and logs.
+- Safe Project Deletion: /session delete and /project delete show what will be removed with its size, require confirmation, support --force for scripting, refuse any path outside the projects directory, and never touch the user's original file.
+- CommandRegistry as Single Source of Truth: Subcommands are first-class dispatchable entities carrying descriptions, capability requirements and handlers. The palette, Tab completion, /help, usage strings and dispatch all read one table, and capability requirements are validated before a handler runs.
+- Hierarchical Command Palette: Typing a command shows its subcommands with descriptions, sourced from the registry, so the interface cannot advertise something dispatch would reject.
+- Capability-Aware Errors: A failure states what was needed, why it was unavailable, what to do about it, and what the target CAN do -- replacing bare path errors.
+- Self-Contained HTML Report Artifacts: Large tabular output (memory maps, modules, exports, imports, strings, snapshot comparisons, runtime timelines) is written into the project as searchable, sortable, filterable HTML with no external CDN, font or script dependency. The terminal keeps a concise summary.
+- .draculaimg VM Package Format: Streaming, chunked, Zstandard-compressed container for the user's own local analysis VM, with per-chunk CRC-32, a SHA-256 of the original in the header, corruption reported with its chunk, verified restore, and no partial file left behind on failure or cancellation.
+- Immutable VM Base and Disposable Overlays: Guest writes land in a qcow2 overlay backed by the base, so the base is physically never modified. Overlays record their owning QEMU PID, are swept when orphaned, and are never removed while a live QEMU owns them.
+- Sandbox Recovery: /sandbox reset stops any session, sweeps overlays, verifies the package, compares the base against the package hash, and rebuilds it only when missing or modified.
+- Bootstrap Installer and Global "drac" Command: Terminal-only installer with arrow-key disk selection showing real free space, manual path override, writability and space validation, the full workspace hierarchy including the reserved "brain" directory, per-user PATH without Administrator, and a Repair/Update/Change-location/Uninstall menu on re-run that never destroys projects.
+- First-Run Startup Picker: "drac" with no arguments asks what to analyze rather than opening an empty prompt; redirected sessions skip it.
+- Application Settings: Persistent user preferences (reports.auto_open, reports.format, memory read cap, palette, tips, sandbox auto-cleanup) with unknown keys rejected.
+- Streaming SHA-256: Incremental hashing so multi-gigabyte images can be verified without being loaded into memory.
+
+Changed
+-------
+- Terminal Selection and Scrollback: The F2 selection mode is removed entirely. Dracula now tracks text selection itself, so the mouse wheel keeps scrolling the viewport while the mouse selects, Ctrl+C copies the selection (and only clears the input line when nothing is selected), and copied text is free of escape sequences. A proportional vertical scrollbar appears when history exceeds the viewport, and scrolling up no longer yanks the viewport back to the bottom -- new output is announced instead.
+- Truthful Runtime Status: Backend readiness is reported as what can actually be proven (Installed, Available, Partial, Connected, Stopped, Failed, Unsupported, Not Required). A binary being present reports Installed, never Ready, and the guest agent reports Connected only when a session exists.
+- Persistent Header: The header no longer advertises the engine inventory (Capstone / Unicorn / Safe PE / CFG / Win32 HLE / MCP Server). It shows Project, Target, Runtime, Sandbox and Status derived from the active project, with rotating contextual tips. The engine inventory remains in /version.
+- MCP on the Project Model: Every MCP tool resolves its subject through the active project via the same services the CLI uses. target_open takes a file path OR a numeric pid field, and project_list, project_info, project_open, project_storage, runtime_status, runtime_events and artifacts_list were added.
+- Sessions and Projects Unified: The legacy /session command and its separate non-durable state were removed. /session is now a friendlier view over the same durable workspaces, so there are no longer two conflicting persistence systems.
+- QEMU Remains Lazy: Opening or creating a project never boots a VM. QEMU starts only when an analysis genuinely requires isolation.
+
+Fixed
+-----
+- A PID Is No Longer Treated As A File Path: A process target records its PID in a numeric field and its resolved backing executable separately. "Error: file does not exist: --pid 17140" is unrepresentable, and a regression suite asserts across sixteen commands that no output contains "--pid", reports a flag as a missing file, or treats a bare PID as a path.
+- Static Analysis On A Process Target: /static (and every other file-oriented command) resolves the process backing image automatically and keeps working after the process exits, because the image is copied into the project at attach time.
+- Memory Snapshot Identity: Snapshot IDs are allocated from a counter persisted in project.json. Two consecutive captures now yield #1 and #2 rather than #1 twice, IDs continue across restarts, and snapshots are addressable by ID or label.
+- Memory Snapshot Comparison: Snapshot region structure is persisted, so /memory compare works on snapshots captured in an earlier session.
+- /runtime events: Returns the recorded events, or plainly states there are none, instead of printing a usage hint for a valid command.
+- Palette/Handler Divergence: /dll advertised info, imports, run and trace while only exports and run were implemented. All advertised subcommands now resolve to real handlers, enforced by a registry consistency suite.
+- Large Output Flooding: /memory map on a 1857-region process prints a summary and writes the full table to an HTML artifact instead of scrolling thousands of rows.
+- Crash-Safe Project Metadata: project.json is written atomically with a .bak fallback, and a corrupted primary file is recovered from the backup with the recovery reported rather than silently discarded.
+
+Verified
+--------
+- Live Notepad Process (PID 17140): Attach resolved the backing image and copied it into the project; /static analyzed it with no path error; /process modules listed 141 modules; /memory map indexed 1857 regions with a concise terminal summary plus an HTML artifact.
+- Live DLL Static/Runtime Correlation: windowscodecs.dll resolved as a loaded module at base 0x7FFFE8FD0000 with static RVA 0xBED30 correlated to live VA 0x7FFFE908ED30 and verified by an actual memory read (LIVE-READ VERIFIED), with STATIC, RESOLVED and LIVE-READ VERIFIED reported as distinct evidence levels.
+- Live .draculaimg Packaging: The user's own 17.1 GB win10.vdi packaged to 8.4 GB (49.3%) in 1094 chunks in 254 s. Deep verification confirmed the header, all 1094 chunks, and recomputed the content SHA-256 e4bb85007f59bd2662e5fb5329f08d943f6c509a2f54dabd87585247e59e7d34. Restore reproduced a byte-identical 17.1 GB base in 70 s. The source image was only read; its size and mtime were unchanged. The image is not committed and is not required by any test.
+- Installer: Installed to a clean root, created the full hierarchy including the reserved brain directory, and drac.exe resolved its own workspace through the install marker with no environment variable set.
+
+============================================================
 Dracula v1.2.4
 Release: 2026-08-18
 ============================================================

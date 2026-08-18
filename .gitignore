@@ -36,3 +36,45 @@ System Volume Information/
 *.zip
 *.tar.gz
 *.7z
+
+# ─── Dracula workspace artifacts (v1.3.0) ───────────────────────────────────
+# None of this belongs in the repository: it is either the user's own data,
+# machine-specific, or regenerable.
+
+# VM disk images and packages. The user supplies their own Windows image and
+# Dracula packages it locally; neither the image nor the package is ever
+# distributed (milestone section 29).
+*.draculaimg
+*.vdi
+*.qcow2
+*.vmdk
+*.vhd
+*.vhdx
+*.img
+uefi_vars.fd
+
+# Installed workspaces and project storage
+projects/
+vm/base/
+vm/overlays/
+vm/cache/
+brain/
+.dracula_root
+
+# Per-project generated output
+*.draculaimg.partial
+*.partial
+memory/snapshots/
+memory/dumps/
+memory/maps/
+events.jsonl
+
+# Generated reports and indexes
+config/projects.json
+config/settings.json
+reports/*.html
+artifacts/
+
+# Local test installations
+/DraculaLive/
+/DraculaInstallTest/
