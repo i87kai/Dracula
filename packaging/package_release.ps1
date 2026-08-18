@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.3.1',
+    [string]$Version,
     [string]$BuildDir,
     [string]$OutputDir
 )
@@ -8,6 +8,17 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+
+$versionMatch = Select-String -LiteralPath (Join-Path $RepoRoot 'CMakeLists.txt') `
+    -Pattern 'project\(Dracula VERSION ([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1
+if (-not $versionMatch) {
+    throw 'Could not resolve the authoritative version from CMakeLists.txt.'
+}
+$sourceVersion = $versionMatch.Matches[0].Groups[1].Value
+if (-not $Version) { $Version = $sourceVersion }
+if ($Version -ne $sourceVersion) {
+    throw "Package version '$Version' does not match authoritative version '$sourceVersion'."
+}
 
 if (-not $BuildDir) {
     $BuildDir = Join-Path $RepoRoot 'build'
@@ -48,9 +59,8 @@ if (Test-Path $stageDir) {
 
 Write-Host '  [+] Staging release binaries...' -ForegroundColor Cyan
 
-# Copy main binary as both drac.exe and Dracula.exe
+# The installed command is drac. Avoid shipping a duplicate 70+ MB executable.
 Copy-Item -Path $exeSource -Destination (Join-Path $stageDir (Join-Path 'bin' 'drac.exe')) -Force
-Copy-Item -Path $exeSource -Destination (Join-Path $stageDir (Join-Path 'bin' 'Dracula.exe')) -Force
 
 # Optional DLLs and agents
 $optionalBinaries = @(
@@ -67,6 +77,20 @@ foreach ($bin in $optionalBinaries) {
     }
 }
 
+$managedRuntimeFiles = @(
+    'Dracula.ManagedHost.exe',
+    'Dracula.ManagedHost.dll',
+    'Dracula.ManagedHost.deps.json',
+    'Dracula.ManagedHost.runtimeconfig.json'
+)
+foreach ($managedName in $managedRuntimeFiles) {
+    $managedPath = Join-Path $BuildDir $managedName
+    if (-not (Test-Path -LiteralPath $managedPath -PathType Leaf)) { continue }
+    $item = Get-Item -LiteralPath $managedPath
+    Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $stageDir (Join-Path 'bin' $item.Name)) -Force
+    Write-Host ('      + bin\' + $item.Name) -ForegroundColor DarkGray
+}
+
 # Copy configs and rules
 $configSrc = Join-Path $RepoRoot 'config'
 if (Test-Path $configSrc) {
@@ -78,7 +102,7 @@ if (Test-Path $rulesSrc) {
 }
 
 # Copy scripts
-$scriptsToInclude = @('install.ps1', 'uninstall.ps1', 'update.ps1', 'bootstrap.ps1')
+$scriptsToInclude = @('install.ps1', 'uninstall.ps1', 'update.ps1', 'apply-update.ps1', 'bootstrap.ps1')
 foreach ($s in $scriptsToInclude) {
     $scriptSrc = Join-Path (Join-Path $RepoRoot 'scripts') $s
     if (Test-Path $scriptSrc) {
@@ -88,7 +112,7 @@ foreach ($s in $scriptsToInclude) {
 }
 
 # Copy documentation & root notices
-$rootFiles = @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'CHANGELOG.txt', 'CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md')
+$rootFiles = @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'CHANGELOG.md', 'CHANGELOG.txt', 'CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md')
 foreach ($rf in $rootFiles) {
     $src = Join-Path $RepoRoot $rf
     if (Test-Path $src) {

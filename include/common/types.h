@@ -33,8 +33,8 @@ namespace Sandbox {
     struct VMConfig {
         std::string vmName         = "WinLab";         // VM Name
         std::string snapshotName   = "Clean_State";    // Clean snapshot name
-        std::string guestUsername  = "user";           // Guest OS username
-        std::string guestPassword  = "123456";         // Guest OS password
+        std::string guestUsername;                     // User-configured guest account
+        std::string guestPassword;                     // Never ship a default guest credential
         std::string guestTargetDir = "C:\\Sandbox\\";  // Guest path to deploy and run the binary
         std::string hostListenIp   = "0.0.0.0";        // Host TCP listening IP
         uint16_t hostPort          = 8899;             // Preferred host TCP listening port

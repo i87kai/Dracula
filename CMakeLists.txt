@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.3.1 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.3.2 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-18")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
@@ -50,12 +50,41 @@ set(CAPSTONE_X86_SUPPORT ON CACHE BOOL "" FORCE)
 
 add_subdirectory(third_party/capstone EXCLUDE_FROM_ALL)
 
+# Unicorn is a pinned source dependency, not a developer-machine archive.
+# Clone with --recurse-submodules so clean checkouts and CI build the same code.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(UNICORN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(UNICORN_INSTALL OFF CACHE BOOL "" FORCE)
+set(UNICORN_ARCH "x86" CACHE STRING "" FORCE)
+# Unicorn 2.0.1 predates CMake 4's policy floor but is compatible with the
+# 3.5 policy set. This keeps modern CMake usable without editing the submodule.
+set(CMAKE_POLICY_VERSION_MINIMUM "3.5" CACHE STRING "" FORCE)
+if(WIN32 AND MINGW)
+    find_program(DRACULA_POSIX_SHELL sh.exe
+        HINTS
+            "$ENV{ProgramFiles}/Git/bin"
+            "$ENV{ProgramW6432}/Git/bin"
+            "$ENV{LOCALAPPDATA}/Programs/Git/bin")
+    if(NOT DRACULA_POSIX_SHELL)
+        message(FATAL_ERROR
+            "Unicorn's MinGW configuration requires sh.exe from Git for Windows.")
+    endif()
+    get_filename_component(DRACULA_POSIX_SHELL_DIR "${DRACULA_POSIX_SHELL}" DIRECTORY)
+    set(ENV{PATH} "${CMAKE_CURRENT_SOURCE_DIR}/tools;${DRACULA_POSIX_SHELL_DIR};$ENV{PATH}")
+endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/unicorn/CMakeLists.txt")
+    message(FATAL_ERROR
+        "Unicorn source is missing. Run: git submodule update --init --recursive")
+endif()
+add_subdirectory(third_party/unicorn EXCLUDE_FROM_ALL)
+
 # ─── Include directories ────────────────────────────────────────────────────
 include_directories(
     ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/capstone/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/unicorn/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd/common
@@ -152,14 +181,21 @@ target_include_directories(DraculaCore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/capstone/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/unicorn/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd/common
 )
 target_link_libraries(DraculaCore PUBLIC
     capstone
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lib/libunicorn.a
+    unicorn
 )
+
+# GCC 16 emits a false-positive strlen overread warning in SQLite's generated
+# amalgamation. Keep Dracula warnings visible while scoping the suppression to
+# the vendored translation unit only.
+set_source_files_properties(third_party/sqlite/sqlite3.c PROPERTIES
+    COMPILE_OPTIONS "$<$<C_COMPILER_ID:GNU>:-Wno-stringop-overread>")
 
 if(WIN32)
     target_link_libraries(DraculaCore PUBLIC ws2_32 iphlpapi psapi crypt32 bcrypt dbghelp ole32 oleaut32 wininet)
@@ -205,6 +241,30 @@ set(GUEST_SOURCES
 add_executable(GuestAgent ${GUEST_SOURCES})
 if(WIN32)
     target_link_libraries(GuestAgent PRIVATE ws2_32 iphlpapi bcrypt)
+endif()
+
+# Managed metadata inspection runs out of process. Build the framework-
+# dependent .NET 10 host beside Dracula so release packages do not depend on
+# the source tree. The .NET 10 runtime is required only for managed analysis.
+find_program(DOTNET_EXECUTABLE dotnet)
+if(DOTNET_EXECUTABLE)
+    add_custom_target(DraculaManagedHost ALL
+        COMMAND ${CMAKE_COMMAND} -E env
+                DOTNET_CLI_TELEMETRY_OPTOUT=1
+                DOTNET_NOLOGO=1
+                ${DOTNET_EXECUTABLE} build
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/managed/Dracula.ManagedHost/Dracula.ManagedHost.csproj
+                --configuration Release
+                --output ${CMAKE_CURRENT_BINARY_DIR}
+        BYPRODUCTS
+            ${CMAKE_CURRENT_BINARY_DIR}/Dracula.ManagedHost.exe
+            ${CMAKE_CURRENT_BINARY_DIR}/Dracula.ManagedHost.dll
+            ${CMAKE_CURRENT_BINARY_DIR}/Dracula.ManagedHost.deps.json
+            ${CMAKE_CURRENT_BINARY_DIR}/Dracula.ManagedHost.runtimeconfig.json
+        COMMENT "Building the Dracula .NET 10 managed-analysis host"
+        VERBATIM)
+else()
+    message(STATUS "  ManagedHost (.NET):  NOT BUILT (dotnet SDK not found)")
 endif()
 
 # ─── Benign Anti-Evasion Probe Samples ──────────────────────────────────────
@@ -356,6 +416,9 @@ if(BUILD_TESTS)
     # 11. ManagedHost .NET 10 Out-of-Process Backend Suite
     add_executable(test_managed_backend tests/test_managed_backend.cpp)
     target_link_libraries(test_managed_backend PRIVATE DraculaCore)
+    if(TARGET DraculaManagedHost)
+        add_dependencies(test_managed_backend DraculaManagedHost)
+    endif()
     add_test(NAME ManagedBackend COMMAND test_managed_backend)
 
     # 12. Evidence Graph & Behavior Chains Suite
@@ -378,6 +441,16 @@ if(BUILD_TESTS)
     add_executable(test_qemu_utr_e2e tests/test_qemu_utr_e2e.cpp)
     target_link_libraries(test_qemu_utr_e2e PRIVATE DraculaCore)
     add_test(NAME QemuUtrE2E COMMAND test_qemu_utr_e2e)
+
+    # 16. Release lifecycle scripts use only isolated synthetic workspaces.
+    find_program(DRACULA_POWERSHELL_EXECUTABLE NAMES powershell.exe powershell REQUIRED)
+    add_test(NAME ReleaseScripts
+        COMMAND ${DRACULA_POWERSHELL_EXECUTABLE}
+                -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass
+                -File ${CMAKE_SOURCE_DIR}/tests/test_release_scripts.ps1
+                -RepoRoot ${CMAKE_SOURCE_DIR}
+                -BuildDir ${CMAKE_BINARY_DIR}
+                -ExpectedVersion ${PROJECT_VERSION})
 endif()
 
 message(STATUS "")
@@ -386,7 +459,9 @@ message(STATUS "  Target Abstractions: Native EXE, Native DLL, Process PID, Serv
 message(STATUS "  Vendored SQLite:     ENABLED (v3.46.1 amalgamation)")
 message(STATUS "  Vendored Zstd:       ENABLED (v1.5.6)")
 message(STATUS "  Capstone / Unicorn:  ENABLED (x86/x64 disassembly & CPU emulation)")
-message(STATUS "  ManagedHost (.NET):  ENABLED (Out-of-Process .NET 10 host)")
+if(TARGET DraculaManagedHost)
+    message(STATUS "  ManagedHost (.NET):  ENABLED (Out-of-Process .NET 10 host)")
+endif()
 message(STATUS "  DbgEng / DIA / ETW:  ENABLED (Windows SDK dynamic adapters)")
 message(STATUS "  In-Process Agent:    DraculaAgent64.dll")
 message(STATUS "  Data Directory:      %LOCALAPPDATA%\\Dracula (Clean Git repo)")

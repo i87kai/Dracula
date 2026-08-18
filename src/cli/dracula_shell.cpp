@@ -106,7 +106,7 @@ namespace Dracula {
         Ui::KeyValue("Architecture", "x86_64");
         Ui::KeyValue("Build", "Release");
         Ui::KeyValue("Release date", Version::ReleaseDate);
-        Ui::KeyValue("Engines", "Capstone 5.0.1, Unicorn 2, Win32 HLE, Safe PE, MCP Server");
+        Ui::KeyValue("Engines", "Capstone 5.0.1, Unicorn 2.1.4, Win32 HLE, Safe PE, MCP Server");
         std::cout << "\n";
     }
 
@@ -538,7 +538,9 @@ namespace Dracula {
 
         if (!sub->handler) return false;
 
-        RenderResult(sub->handler(subArgs));
+        const auto result = sub->handler(subArgs);
+        RenderResult(result);
+        if (result.exitRequested) m_running = false;
         return true;
     }
 

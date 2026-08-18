@@ -1233,9 +1233,10 @@ namespace Dracula {
                          return App::CommandResult::Failure("update_install_failed",
                              "Failed to install update.", error);
                      }
-                     auto r = App::CommandResult::Success("Update to " + info.tag + " installed successfully!");
-                     r.Line("Backup of previous binaries saved in <InstallRoot>\\backup.");
-                     r.Line("Please restart Dracula to run the updated version.");
+                     auto r = App::CommandResult::Success("Update to " + info.tag + " verified and staged.");
+                     r.Line("Dracula will now exit. The transactional updater will replace the program, validate it, and restart Dracula.");
+                     r.Line("If commit fails, the updater restores the previous installation automatically.");
+                     r.exitRequested = true;
                      return r;
                  }}
             },
@@ -1256,12 +1257,12 @@ namespace Dracula {
             .requiresArgs = false,
             .handler = [](DraculaShell&, const std::vector<std::string>&) {
                 std::cout << "\n  \x1b[38;2;189;147;249mDRACULA\x1b[0m \x1b[38;2;255;121;198mv" DRACULA_VERSION_STRING "\x1b[0m"
-                          << " — Dynamic Reversing & Automated Code Understanding Architecture\n"
+                          << " — Local-first reverse engineering and runtime analysis for Windows\n"
                           << "  \x1b[38;2;98;114;164m" << std::string(72, '-') << "\x1b[0m\n\n"
                           << "  \x1b[1mCore Manifesto:\x1b[0m\n"
                           << "    \x1b[38;2;139;233;253m1. ONE PROJECT\x1b[0m         Durable workspace storage preserving sessions, snapshots, and artifacts.\n"
                           << "    \x1b[38;2;139;233;253m2. ONE TARGET CONTEXT\x1b[0m  Unified model across PE files, live PIDs, .NET assemblies, drivers, and DLLs.\n"
-                          << "    \x1b[38;2;139;233;253m3. ONE EVIDENCE MODEL\x1b[0m  Every fact tagged with rigorous provenance (Calculated, Resolved, Live-Read).\n\n"
+                          << "    \x1b[38;2;139;233;253m3. ONE EVIDENCE MODEL\x1b[0m  Structured observations and explicit static/live correlation labels.\n\n"
                           << "  \x1b[1mOpen Source & Repository:\x1b[0m\n"
                           << "    License:    GNU General Public License v3.0 (GPL-3.0-only)\n"
                           << "    Repository: " DRACULA_GITHUB_URL ".git\n"

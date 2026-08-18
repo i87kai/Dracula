@@ -1,0 +1,10 @@
+#!/bin/sh
+# Unicorn's embedded QEMU configure script requires a pkg-config command to
+# exist on MinGW, but its compact build never queries a package. Keep this
+# compatibility shim intentionally minimal and fail if arguments are added in
+# a future upstream release.
+if [ "$#" -ne 0 ]; then
+    echo "Dracula pkg-config compatibility shim does not resolve packages." >&2
+    exit 1
+fi
+exit 0

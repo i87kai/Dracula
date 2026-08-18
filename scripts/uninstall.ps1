@@ -42,10 +42,12 @@ if (-not (Test-Path $InstallRoot)) {
     exit 0
 }
 
-Write-Host ''
-Write-Host "  DRACULA UNINSTALLER" -ForegroundColor Red
-Write-Host "  Target: $InstallRoot" -ForegroundColor DarkGray
-Write-Host ''
+if (-not $Quiet) {
+    Write-Host ''
+    Write-Host "  DRACULA UNINSTALLER" -ForegroundColor Red
+    Write-Host "  Target: $InstallRoot" -ForegroundColor DarkGray
+    Write-Host ''
+}
 
 # 1. Remove PATH entry
 $binDir = Join-Path $InstallRoot 'bin'
@@ -83,7 +85,7 @@ if ($PurgeProjects) {
     Write-Ok "Entire Dracula directory removed."
 } else {
     Write-Ok "Dracula uninstalled successfully."
-    Write-Host "  User projects preserved at: '$InstallRoot\projects'" -ForegroundColor Cyan
+    if (-not $Quiet) { Write-Host "  User projects preserved at: '$InstallRoot\projects'" -ForegroundColor Cyan }
 }
 
-Write-Host ''
+if (-not $Quiet) { Write-Host '' }

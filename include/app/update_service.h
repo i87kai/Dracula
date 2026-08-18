@@ -4,8 +4,8 @@
 // Dracula auto-update service.
 //
 // Checks the GitHub Releases API for a newer version, downloads the release
-// zip into a temporary directory, verifies the SHA-256 digest, backs up the
-// current installation, and replaces it in-place.
+// zip into a temporary directory, requires and verifies the SHA-256 digest,
+// then launches the transactional post-exit replacement helper.
 //
 // The service is intentionally thin: it talks HTTP via WinINet (already a
 // Windows dependency), JSON via the project's own Json class, and hashing via
@@ -23,8 +23,8 @@ namespace Dracula {
 namespace App {
 
     struct UpdateInfo {
-        std::string tag;           // e.g. "v1.3.1"
-        std::string version;       // e.g. "1.3.1"
+        std::string tag;           // e.g. "v1.3.2"
+        std::string version;       // e.g. "1.3.2"
         std::string releaseUrl;    // HTML URL to the GitHub release page
         std::string downloadUrl;   // Direct .zip download URL
         std::string sha256Url;     // URL to the .sha256 file
@@ -38,8 +38,8 @@ namespace App {
         Available,      // A newer version exists
         Downloading,    // Download in progress
         Verifying,      // SHA-256 check in progress
-        Installing,     // Swapping files in place
-        Installed,      // Newly installed; restart required
+        Installing,     // Staging and validating the replacement
+        Staged,         // Post-exit transactional helper launched
         Error,          // Something went wrong; see lastError
     };
 
@@ -62,8 +62,8 @@ namespace App {
         bool CheckDefault(std::string& error);
 
         // ── Install ──────────────────────────────────────────────────────────
-        // Downloads, verifies, and installs the release described by `info`.
-        // The caller's executable directory is used as the install root.
+        // Downloads and verifies the release, stages it, and launches the
+        // updater helper. The caller must then honor CommandResult::exitRequested.
         bool Install(const UpdateInfo&       info,
                      const ProgressCallback& progress,
                      std::string&            error);

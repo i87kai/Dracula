@@ -66,6 +66,7 @@ namespace App {
     // The universal envelope returned by the operation API.
     struct CommandResult {
         bool                            ok = true;
+        bool                            exitRequested = false;
         std::string                     summary;
         std::vector<std::string>        lines;
         std::vector<ArtifactReference>  artifacts;

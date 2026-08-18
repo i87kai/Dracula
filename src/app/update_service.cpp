@@ -12,6 +12,7 @@
 #include <sstream>
 #include <algorithm>
 #include <iostream>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -61,6 +62,26 @@ namespace App {
             std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
             return s;
         }
+
+        bool IsSafeVersion(const std::string& value) {
+            int dots = 0;
+            bool digitInPart = false;
+            for (char c : value) {
+                if (c >= '0' && c <= '9') {
+                    digitInPart = true;
+                } else if (c == '.' && digitInPart && dots < 2) {
+                    ++dots;
+                    digitInPart = false;
+                } else {
+                    return false;
+                }
+            }
+            return dots == 2 && digitInPart;
+        }
+
+        std::string QuoteArg(const std::string& value) {
+            return "\"" + value + "\"";
+        }
     } // namespace
 
     UpdateService& UpdateService::Instance() {
@@ -95,11 +116,11 @@ namespace App {
             case UpdateStatus::Downloading:
                 return "Downloading update...";
             case UpdateStatus::Verifying:
-                return "Verifying update package signature...";
+                return "Verifying update package SHA-256...";
             case UpdateStatus::Installing:
                 return "Installing update...";
-            case UpdateStatus::Installed:
-                return "Update installed successfully (" + m_lastInfo.tag + "). Please restart Dracula.";
+            case UpdateStatus::Staged:
+                return "Update verified and staged (" + m_lastInfo.tag + "); transactional replacement is pending process exit.";
             case UpdateStatus::Error:
                 return "Update check failed: " + m_lastError;
         }
@@ -227,10 +248,16 @@ namespace App {
         if (!out.version.empty() && (out.version[0] == 'v' || out.version[0] == 'V')) {
             out.version = out.version.substr(1);
         }
+        if (!IsSafeVersion(out.version)) {
+            error = "Release tag is not a supported semantic version: " + out.tag;
+            return false;
+        }
 
         out.downloadUrl.clear();
         out.sha256Url.clear();
 
+        const std::string expectedZip = ToLower("Dracula-v" + out.version + "-windows-x64.zip");
+        const std::string expectedSha = expectedZip + ".sha256";
         if (rel.Has("assets") && rel["assets"].IsArray()) {
             const Json& assets = rel["assets"];
             for (size_t i = 0; i < assets.Size(); ++i) {
@@ -240,9 +267,9 @@ namespace App {
                 std::string name = ToLower(asset["name"].AsString());
                 std::string url = asset["browser_download_url"].AsString();
 
-                if (name.find("windows-x64.zip") != std::string::npos || (name.find(".zip") != std::string::npos && name.find(".sha256") == std::string::npos)) {
+                if (name == expectedZip) {
                     out.downloadUrl = url;
-                } else if (name.find(".sha256") != std::string::npos) {
+                } else if (name == expectedSha) {
                     out.sha256Url = url;
                 }
             }
@@ -250,6 +277,10 @@ namespace App {
 
         if (out.downloadUrl.empty()) {
             error = "Release " + out.tag + " does not contain a suitable Windows x64 binary archive asset";
+            return false;
+        }
+        if (out.sha256Url.empty()) {
+            error = "Release " + out.tag + " does not contain the required SHA-256 sidecar";
             return false;
         }
 
@@ -347,7 +378,14 @@ namespace App {
         std::error_code ec;
         fs::create_directories(tempDir, ec);
 
-        std::string zipPath = (fs::path(tempDir) / ("Dracula-" + info.tag + ".zip")).string();
+        if (!IsSafeVersion(info.version) || info.downloadUrl.empty() || info.sha256Url.empty()) {
+            error = "Update metadata is incomplete or unsafe; a semantic version, ZIP, and SHA-256 sidecar are required";
+            m_status = UpdateStatus::Error;
+            m_lastError = error;
+            return false;
+        }
+
+        std::string zipPath = (fs::path(tempDir) / ("Dracula-v" + info.version + ".zip")).string();
         std::string shaPath = zipPath + ".sha256";
 
         // Download package
@@ -357,33 +395,36 @@ namespace App {
             return false;
         }
 
-        // Verify hash if available
-        if (!info.sha256Url.empty()) {
-            m_status = UpdateStatus::Verifying;
-            if (progress) progress("Verifying checksum", 0, 100);
+        // The checksum is mandatory. A missing/unreadable sidecar is a hard
+        // failure, never permission to execute an unverified package.
+        m_status = UpdateStatus::Verifying;
+        if (progress) progress("Verifying checksum", 0, 100);
 
-            std::string shaError;
-            if (DownloadFile(info.sha256Url, shaPath, nullptr, shaError)) {
-                std::ifstream shaIn(shaPath);
-                if (shaIn.is_open()) {
-                    std::string expectedSha;
-                    std::getline(shaIn, expectedSha);
-                    shaIn.close();
-
-                    if (!VerifySha256(zipPath, expectedSha, error)) {
-                        m_status = UpdateStatus::Error;
-                        m_lastError = error;
-                        return false;
-                    }
-                }
-            }
+        if (!DownloadFile(info.sha256Url, shaPath, nullptr, error)) {
+            m_status = UpdateStatus::Error;
+            m_lastError = error;
+            return false;
+        }
+        std::ifstream shaIn(shaPath);
+        std::string expectedSha;
+        if (!shaIn.is_open() || !std::getline(shaIn, expectedSha)) {
+            error = "Could not read the required SHA-256 sidecar";
+            m_status = UpdateStatus::Error;
+            m_lastError = error;
+            return false;
+        }
+        shaIn.close();
+        if (!VerifySha256(zipPath, expectedSha, error)) {
+            m_status = UpdateStatus::Error;
+            m_lastError = error;
+            return false;
         }
 
         m_status = UpdateStatus::Installing;
         if (progress) progress("Unpacking update package", 50, 100);
 
         std::string installRoot = Paths::InstallRoot();
-        std::string stageDir = (fs::path(tempDir) / ("stage_" + info.tag)).string();
+        std::string stageDir = (fs::path(tempDir) / ("stage_v" + info.version)).string();
         fs::remove_all(stageDir, ec);
         fs::create_directories(stageDir, ec);
 
@@ -408,44 +449,44 @@ namespace App {
             }
         }
 
-        // Backup existing bin and tools to <InstallRoot>\backup\vX.X.X
-        std::string backupDir = (fs::path(installRoot) / "backup" / ("v" DRACULA_VERSION_STRING)).string();
-        fs::create_directories(backupDir, ec);
-
-        try {
-            // Copy stage contents into installRoot preserving user projects/logs/config
-            for (const auto& item : fs::recursive_directory_iterator(copySource)) {
-                auto rel = fs::relative(item.path(), copySource);
-                fs::path destItem = fs::path(installRoot) / rel;
-
-                // Never overwrite user projects, custom configs or logs
-                std::string firstComp = rel.begin()->string();
-                if (firstComp == "projects" || firstComp == "logs" || firstComp == "cache") {
-                    continue;
-                }
-
-                if (item.is_directory()) {
-                    fs::create_directories(destItem, ec);
-                } else if (item.is_regular_file()) {
-                    fs::create_directories(destItem.parent_path(), ec);
-                    // If target file exists and is executable, backup first
-                    if (fs::exists(destItem, ec)) {
-                        fs::path backupItem = fs::path(backupDir) / rel;
-                        fs::create_directories(backupItem.parent_path(), ec);
-                        fs::copy_file(destItem, backupItem, fs::copy_options::overwrite_existing, ec);
-                    }
-                    fs::copy_file(item.path(), destItem, fs::copy_options::overwrite_existing, ec);
-                }
-            }
-        } catch (const std::exception& e) {
-            error = std::string("Error writing update files: ") + e.what();
+        const fs::path helper = copySource / "scripts" / "apply-update.ps1";
+        const fs::path stagedExe = copySource / "bin" / "drac.exe";
+        if (!fs::exists(helper, ec) || !fs::exists(stagedExe, ec)) {
+            error = "Verified package is missing the transactional updater or bin\\drac.exe";
             m_status = UpdateStatus::Error;
             m_lastError = error;
             return false;
         }
 
-        m_status = UpdateStatus::Installed;
-        if (progress) progress("Update completed", 100, 100);
+        char exePath[MAX_PATH] = {};
+        ::GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+        const DWORD parentPid = ::GetCurrentProcessId();
+        std::string command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " +
+            QuoteArg(helper.string()) + " -InstallRoot " + QuoteArg(installRoot) +
+            " -StageRoot " + QuoteArg(copySource.string()) +
+            " -ExpectedVersion " + QuoteArg(info.version) +
+            " -ParentPid " + std::to_string(parentPid) +
+            " -RestartExecutable " + QuoteArg(exePath);
+
+        std::vector<char> mutableCommand(command.begin(), command.end());
+        mutableCommand.push_back('\0');
+        STARTUPINFOA startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!::CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE,
+                              CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                              nullptr, nullptr, &startup, &process)) {
+            error = "Could not launch the transactional updater (Win32 error " +
+                    std::to_string(::GetLastError()) + ")";
+            m_status = UpdateStatus::Error;
+            m_lastError = error;
+            return false;
+        }
+        ::CloseHandle(process.hThread);
+        ::CloseHandle(process.hProcess);
+
+        m_status = UpdateStatus::Staged;
+        if (progress) progress("Update verified and staged", 100, 100);
 
         return true;
     }

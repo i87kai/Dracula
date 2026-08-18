@@ -1,4 +1,25 @@
 ============================================================
+Dracula v1.3.2
+Release: 2026-08-18
+============================================================
+
+Changed
+-------
+- Rewrote the public README and detailed documentation for the durable project workflow, local-first installation, architecture, sandboxing, MCP, and contribution boundaries.
+- Pinned Capstone and Unicorn as reproducible submodules, built Unicorn from source, and included the .NET 10 ManagedHost in normal builds and packages.
+- Reduced the release archive to one canonical bin\drac.exe and audited the shipped dependency notices.
+
+Fixed
+-----
+- Made release checksums mandatory for bootstrap and in-application updates.
+- Added staged, post-exit transactional replacement with updater-owned backup, rollback, and post-commit version validation.
+- Made repair restore program components without replacing durable projects, configuration, or VM data.
+
+Verified
+--------
+- Clean source build, full CTest suite, package, isolated install, repair, uninstall preservation, checksum rejection, successful update, and injected updater rollback.
+
+============================================================
 Dracula v1.3.1
 Release: 2026-08-18
 ============================================================
