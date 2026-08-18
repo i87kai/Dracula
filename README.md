@@ -1,52 +1,36 @@
-# 🧛 Dracula: Unified Binary Intelligence & Reverse-Engineering Platform
+# 🧛 Dracula: Universal Target Runtime & Reverse-Engineering Intelligence Platform
 
-A state-of-the-art, high-performance **C++20 Binary Analysis, CPU Emulator (Unicorn Engine 2), Capstone Disassembler, Safe PE Inspector, Control Flow Graph (CFG) Engine, Win32 High-Level Emulation (HLE) Environment, Model Context Protocol (MCP) Server, and Dynamic Sandbox Suite**.
+A state-of-the-art, high-performance **C++20 Unified Target Runtime (UTR), CPU Emulator (Unicorn Engine 2), Capstone Disassembler, Safe PE Inspector, Control Flow Graph (CFG) Engine, Win32 High-Level Emulation (HLE) Environment, Memory Transformation Detector, Out-of-Process Managed (.NET) Host, Model Context Protocol (MCP) Server, and Dynamic Sandbox Suite**.
 
-Current Baseline: **`Dracula v1.0.0`**  
+Current Version: **`Dracula v1.2.0`** (Universal Target Runtime Milestone)  
 Centerpiece Executable: **`Dracula.exe`**
 
 ---
 
 ## 🌟 Key Features
 
-* 🧛 **Unified Single-Binary Architecture:** Everything is driven from a single, fast portable executable `Dracula.exe` — featuring both an interactive shell with slash command palette (`dracula ❯ `) and scripted CLI flags.
-* ⌨️ **Interactive Terminal Shell & Slash Command Palette:**
-  * **Real-time interactive line editing**: Left/Right cursor movement, Home/End, Backspace/Delete, and line clearing shortcuts (`Ctrl+A`, `Ctrl+E`, `Ctrl+K`, `Ctrl+U`).
-  * **Live Slash Command Palette (`/`)**: Instant filtered popup menu displaying commands and aligned descriptions as you type.
-  * **Keyboard Navigation**: `Up`/`Down` arrow selection, `Tab` command acceptance and argument/path completion, `Escape` menu dismissal.
-  * **Persistent Command History**: Saved automatically to `%APPDATA%\Dracula\history.txt` with deduplication and bounded size.
-  * **Intelligent Path Completion**: Tab-completes file paths and directories with quote and space handling.
-* 🛡️ **Safe Bounds-Checked PE Inspector:** Safe zero-copy parsing of DOS, COFF, Optional (PE32 & PE32+ 64-bit), Section Tables, Imports (IAT), Exports (EAT), TLS Callbacks, CLR/.NET, and Native SHA-256/MD5 hashing.
-* 🔒 **Security Mitigation Audit:** Real-time auditing for **ASLR**, **High-Entropy ASLR**, **DEP/NX**, **Control Flow Guard (CFG)**, **SEH**, **Authenticode Signatures**, and **RWX Section Memory Hazards**.
-* ⚙️ **Unicorn Engine 2 CPU Emulation & Win32 HLE:**
-  * Native x86/x64 instruction emulation.
-  * **Mock TEB & PEB**: Set up at `0x7FFE0000` / `0x7FFE1000` with `BeingDebugged` policy toggles (`Bypass`, `Realistic`, `Neutral`).
-  * **Synthetic HLE Thunks**: Traps API calls at `0x7FFF80000000` to execute native C++ handlers for `VirtualAlloc`, `VirtualProtect`, `IsDebuggerPresent`, `LoadLibrary`, `GetProcAddress`, `Sleep`, `ExitProcess`, and CRT functions.
-  * **Dynamic Page Mapping**: On-demand paging in standard mode or strict sandboxing for fault isolation.
-* 🧩 **Capstone 5.0.1 Disassembler & Control Flow Graph (CFG) Engine:**
-  * Accurate instruction decoding with colored syntax highlighting.
-  * Recursive basic block traversal and true/false branch edge resolution.
-  * Cross-reference (XRef) analysis detecting code calls, conditional jumps, imports, and data references.
-* 🔍 **AOB Hex Pattern Scanner:**
-  * Dynamic wildcard pattern scanner accepting arbitrary runtime signatures (e.g. `48 8B 05 ?? ?? ?? ?? 48 85 C0`).
-* 📊 **Shannon Entropy & Packer Detector:**
-  * Section-by-section mathematical entropy ($H = -\sum p_i \log_2 p_i$) and packer signature detection (UPX, ASPack, Themida, VMProtect, MPRESS).
-* 🕵️ **Anti-Evasion Intelligence & Differential Execution:**
-  * Detects, locates and explains code that changes behaviour when it believes it is being analyzed — anti-VM, anti-sandbox, anti-debug, timing gates and instrumentation checks.
-  * **Controlled environment profiles** (`Baseline`, `Realistic`, `AnalysisFriendly`) decide exactly what a sample can observe about its host: CPUID answers, hypervisor exposure, CPU topology, memory, disk, firmware, MAC prefix, screen, uptime and input activity.
-  * **Coherent multi-clock model**: RDTSC, RDTSCP, QueryPerformanceCounter, GetTickCount and uptime all derive from one logical counter, so an accelerated `Sleep(5000)` advances every clock by 5000 ms together instead of contradicting itself.
-  * **Bounded branch-influence provenance** separates *"the program asked"* from *"the answer decided what ran"* — the distinction the entire confidence model rests on.
-  * **Differential execution** (`--compare`) re-runs the sample under multiple profiles and reports the exact branch RVA that went the other way, the blocks and functions only one run reached, and how each run ended.
-  * **Environment coherence validator** catches profiles that contradict themselves (hypervisor bit hidden while the vendor leaf still answers, CPUID topology disagreeing with the OS API, a physical-looking profile exposing a QEMU disk model) and scores how fingerprintable an environment is.
-  * **Full normalization audit trail**: every value Dracula supplies that differs from Baseline is recorded with its baseline value, supplied value, source and reason. Nothing is changed silently.
-* 🎯 **Evidence-Based Multi-Signal Threat Evaluator:**
-  * Transparent corroboration of static, entropy, emulation, and sandbox signals into a 0-100 score and automated **MITRE ATT&CK Matrix**.
-* 🤖 **Native Model Context Protocol (MCP) Server:**
-  * Clean stdio JSON-RPC 2.0 MCP server connecting Dracula directly with **Claude Desktop**, **Claude Code**, **Cursor**, and **Antigravity**.
-* 📦 **Multi-Format Reports:**
-  * Instant export to JSON (`report.json`), Markdown (`report.md`), and clean ANSI/plain text summaries.
-* 🧪 **Zero-Touch Dynamic QEMU Sandbox:**
-  * Isolated dynamic execution with live guest TCP telemetry streaming and instant rollback via volatile `-snapshot` mode.
+* 🌐 **Universal Target Runtime (UTR):**
+  * **Unified Target Abstraction (`ITarget`)**: Treats Native EXEs, Native DLLs, Running Processes by PID, Windows Services, .NET Managed Assemblies, Windows Kernel Drivers (`.sys`), and QEMU-isolated VMs as first-class analysis targets.
+  * **Deterministic Target Fingerprinting**: Automatically resolves target kind, bitness, architecture, security mitigations, and binds appropriate backends.
+* 🧠 **Memory Intelligence & Transformation Engine:**
+  * **Virtual Memory Layout**: Full memory mapping, page protection audits, and entropy distribution.
+  * **Incremental Zstd-Compressed Snapshots**: Captures point-in-time process memory states into `%LOCALAPPDATA%\Dracula\snapshots\`.
+  * **Runtime Transformation Detection**: Identifies dynamic code injection, unpacking, and self-modifying payloads (`PAGE_READWRITE` $\to$ payload write $\to$ `PAGE_EXECUTE_READ` $\to$ execution entry).
+* 🎯 **Function Intelligence & Prioritization:**
+  * **Centralized Function Graph**: Synthesizes static CFGs, XRefs, strings, and import references into an indexed function database.
+  * **Decoupled Scoring**: `InterestScore` (0–100 investigation priority) strictly decoupled from `ThreatScore` (maliciousness).
+  * **Runtime Correlation**: Correlates instruction execution traces and Win32 HLE call records to discovered functions.
+* 📊 **Evidence Graph & Provenance Tracing:**
+  * **Fact Graph Model**: Explicit truth levels (`Observed`, `Inferred`, `Suspected`, `Unknown`) with multi-engine provenance (Capstone, Unicorn, ETW, DbgEng, Agent, QEMU, ClrMD).
+  * **Multi-Step Behavior Chains**: Connects discrete observations into reasoned behavioral hypotheses.
+* 🧰 **Safe DLL Execution Harness:**
+  * Safe export directory enumeration and capability-gated invocation inside isolated test environments.
+* ⚡ **Out-of-Process Managed Host (.NET 10):**
+  * Subprocess JSON-RPC server (`Dracula.ManagedHost.exe`) with hard 5s timeouts for zero-crash inspection of .NET assembly metadata, type hierarchies, IL disassembly, strings, and P/Invoke declarations.
+* 🔌 **Expanded Model Context Protocol (MCP) Server:**
+  * Complete stdio JSON-RPC 2.0 interface exposing 15 rich analysis tools for AI pair programming (Claude Desktop, Cursor, Antigravity).
+* 📁 **Isolated Runtime Storage:**
+  * All database sessions (`dracula_sessions.db`), Zstd snapshots, and exported artifacts are written to `%LOCALAPPDATA%\Dracula\`, ensuring git working trees remain 100% clean.
 
 ---
 

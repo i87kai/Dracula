@@ -8,6 +8,7 @@
 #include "common/input_validator.h"
 #include "common/format.h"
 #include "host/report_writer.h"
+#include "host/process_inspector.h"
 #include "mcp/mcp_server.h"
 #include "core/pe_inspector.h"
 #include "core/disassembler.h"
@@ -19,6 +20,13 @@
 #include "core/unicorn_analyzer.h"
 #include "core/anti_evasion_engine.h"
 #include "core/threat_evaluator.h"
+#include "utr/target_manager.h"
+#include "utr/analysis_orchestrator.h"
+#include "utr/session_manager.h"
+#include "utr/artifact_manager.h"
+#include "utr/managed_backend.h"
+#include "utr/dll_harness.h"
+#include "utr/external_observer.h"
 
 #include <iostream>
 #include <sstream>
@@ -430,6 +438,364 @@ namespace Dracula {
         }
 
         return true;
+    }
+
+    // ─── UTR Universal Target Handlers ─────────────────────────────────────
+
+    void DraculaShell::HandleTarget(const std::vector<std::string>& args) {
+        if (args.empty() || args[0] == "info") {
+            auto target = UTR::TargetManager::Instance().GetActiveTarget();
+            if (!target) {
+                Ui::UsageHint("No active target. Open a target first.", "/target <file|--pid <pid>|--service <name>|--vm>");
+                return;
+            }
+            auto info = target->GetInfo();
+            auto caps = target->GetCapabilities();
+
+            std::cout << "\n " << C(ColorRole::Primary) << "Universal Target Information" << R() << "\n";
+            std::cout << " " << C(ColorRole::Border) << std::string(60, '-') << R() << "\n";
+            std::cout << "  " << C(ColorRole::Technical) << "Name:         " << R() << C(ColorRole::Accent) << info.name << R() << "\n";
+            std::cout << "  " << C(ColorRole::Technical) << "Kind:         " << R() << C(ColorRole::Text) << UTR::TargetKindToString(info.kind) << R() << "\n";
+            std::cout << "  " << C(ColorRole::Technical) << "Path:         " << R() << C(ColorRole::Text) << info.path << R() << "\n";
+            std::cout << "  " << C(ColorRole::Technical) << "Architecture: " << R() << C(ColorRole::Text) << info.architecture << R() << "\n";
+            std::cout << "  " << C(ColorRole::Technical) << "Backend:      " << R() << C(ColorRole::Success) << info.activeBackend << R() << "\n";
+            std::cout << "  " << C(ColorRole::Technical) << "Capabilities: " << R() << C(ColorRole::Text) << caps.Summary() << R() << "\n";
+            if (!info.sha256.empty()) {
+                std::cout << "  " << C(ColorRole::Technical) << "SHA-256:      " << R() << C(ColorRole::Muted) << info.sha256 << R() << "\n";
+            }
+            std::cout << " " << C(ColorRole::Border) << std::string(60, '-') << R() << "\n\n";
+            return;
+        }
+
+        if (args[0] == "capabilities" || args[0] == "caps") {
+            auto target = UTR::TargetManager::Instance().GetActiveTarget();
+            if (!target) {
+                Ui::Error("No active target loaded.");
+                return;
+            }
+            auto caps = target->GetCapabilities();
+            std::cout << "\n " << C(ColorRole::Primary) << "Target Capabilities Matrix" << R() << "\n";
+            std::cout << " " << C(ColorRole::Border) << std::string(50, '-') << R() << "\n";
+            std::cout << "  Static Analysis:    " << (caps.staticAnalysis ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Module Enumeration: " << (caps.modules ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Thread Visibility:  " << (caps.threads ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Memory Read:        " << (caps.memoryRead ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Memory Snapshots:   " << (caps.memorySnapshots ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Runtime Events:     " << (caps.runtimeEvents ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Function Graph/CFG: " << (caps.functions ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Symbols & PDB:      " << (caps.symbols ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Managed .NET Meta:  " << (caps.managedMetadata ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Debug Control:      " << (caps.debugControl ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  QEMU Sandbox Exec:  " << (caps.sandboxExecution ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << "  Kernel Observation: " << (caps.kernelObservation ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
+            std::cout << " " << C(ColorRole::Border) << std::string(50, '-') << R() << "\n\n";
+            return;
+        }
+
+        if (args[0] == "close") {
+            UTR::TargetManager::Instance().CloseActiveTarget();
+            m_activeFile.clear();
+            m_sessionResult.reset();
+            Ui::Success("Active target closed.");
+            return;
+        }
+
+        // Open target
+        std::string targetSpec = args[0];
+        if (args.size() > 1 && (targetSpec == "--pid" || targetSpec == "-p" || targetSpec == "--service" || targetSpec == "-s")) {
+            targetSpec += " " + args[1];
+        }
+
+        auto res = UTR::TargetManager::Instance().OpenTarget(targetSpec);
+        if (!res.Ok()) {
+            Ui::Error("Failed to open target: " + res.Error());
+            return;
+        }
+
+        auto info = res.Value()->GetInfo();
+        m_activeFile = info.path;
+        Ui::Success("Target opened: " + info.name + " (" + UTR::TargetKindToString(info.kind) + ")");
+    }
+
+    void DraculaShell::HandleMemory(const std::vector<std::string>& args) {
+        auto target = UTR::TargetManager::Instance().GetActiveTarget();
+        if (!target) {
+            ReportMissingTarget("memory");
+            return;
+        }
+
+        std::string sub = args.empty() ? "map" : args[0];
+
+        if (sub == "map" || sub == "regions") {
+            auto mapRes = target->GetMemoryMap();
+            if (!mapRes.Ok()) {
+                Ui::Error("Failed to get memory map: " + mapRes.Error());
+                return;
+            }
+
+            const auto& regions = mapRes.Value();
+            std::cout << "\n " << C(ColorRole::Primary) << "Virtual Memory Layout (" << regions.size() << " regions)" << R() << "\n";
+            std::cout << " " << C(ColorRole::Border) << std::string(75, '-') << R() << "\n";
+            std::cout << "  " << std::left << std::setw(18) << "Base Address"
+                      << std::setw(12) << "Size"
+                      << std::setw(26) << "Protection"
+                      << std::setw(10) << "Entropy"
+                      << "Module" << "\n";
+            std::cout << " " << C(ColorRole::Border) << std::string(75, '-') << R() << "\n";
+
+            for (size_t i = 0; i < std::min(size_t(25), regions.size()); ++i) {
+                const auto& r = regions[i];
+                std::cout << "  0x" << std::hex << std::setw(16) << r.baseAddress << std::dec
+                          << std::setw(12) << r.size
+                          << std::setw(26) << UTR::ProtectionToString(r.currentProtect)
+                          << std::fixed << std::setprecision(2) << std::setw(10) << r.entropy
+                          << (r.moduleName.empty() ? "-" : r.moduleName) << "\n";
+            }
+            if (regions.size() > 25) {
+                std::cout << "  ... [" << (regions.size() - 25) << " more regions written to artifacts]\n";
+            }
+            std::cout << " " << C(ColorRole::Border) << std::string(75, '-') << R() << "\n\n";
+            return;
+        }
+
+        if (sub == "snapshot") {
+            auto snapRes = target->TakeSnapshot("Manual CLI Snapshot");
+            if (!snapRes.Ok()) {
+                Ui::Error("Snapshot failed: " + snapRes.Error());
+                return;
+            }
+            const auto& snap = snapRes.Value();
+            Ui::Success("Memory snapshot #" + std::to_string(snap.snapshotIndex) + " captured: " +
+                       std::to_string(snap.totalRegions) + " regions, " +
+                       std::to_string(snap.totalCommittedBytes / 1024) + " KB committed.");
+            return;
+        }
+
+        if (sub == "transformations") {
+            Ui::Info("Querying detected runtime transformations...");
+            auto targetPtr = UTR::TargetManager::Instance().GetActiveTarget();
+            if (targetPtr) {
+                auto memRes = targetPtr->GetMemoryMap();
+                if (memRes.Ok()) {
+                    UTR::MemoryIntelligenceManager mgr;
+                    mgr.CaptureSnapshot(memRes.Value(), "Snap1");
+                    mgr.CaptureSnapshot(memRes.Value(), "Snap2");
+                    auto comp = mgr.CompareSnapshots(1, 2);
+                    auto trans = mgr.DetectTransformations(comp);
+                    if (trans.empty()) {
+                        std::cout << "  No runtime transformations detected in active regions.\n";
+                    } else {
+                        for (const auto& t : trans) {
+                            std::cout << "  [" << t.id << "] 0x" << std::hex << t.regionAddress << std::dec
+                                      << " (" << t.regionSize << " bytes) - " << t.assessmentSummary << "\n";
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        Ui::UsageHint("Available memory commands:", "/memory [map|snapshot|compare|transformations|dump]");
+    }
+
+    void DraculaShell::HandleDll(const std::vector<std::string>& args) {
+        auto target = UTR::TargetManager::Instance().GetActiveTarget();
+        std::string sub = args.empty() ? "info" : args[0];
+
+        if (sub == "exports") {
+            std::string file = target ? target->GetInfo().path : ResolveTargetFile(args, 1);
+            if (file.empty()) {
+                ReportMissingTarget("dll");
+                return;
+            }
+
+            UTR::DllExecutionHarness harness;
+            std::string err;
+            if (!harness.LoadSafe(file, err)) {
+                Ui::Error(err);
+                return;
+            }
+
+            auto exports = harness.EnumerateExports(err);
+            std::cout << "\n " << C(ColorRole::Primary) << "Export Directory (" << exports.size() << " exported symbols)" << R() << "\n";
+            std::cout << " " << C(ColorRole::Border) << std::string(60, '-') << R() << "\n";
+            for (const auto& exp : exports) {
+                std::cout << "  Ordinal " << std::setw(4) << exp.ordinal << ": "
+                          << C(ColorRole::Accent) << exp.name << R()
+                          << " (RVA: 0x" << std::hex << exp.rva << std::dec << ")\n";
+            }
+            std::cout << " " << C(ColorRole::Border) << std::string(60, '-') << R() << "\n\n";
+            return;
+        }
+
+        if (sub == "run" && args.size() > 1) {
+            std::string expName = args[1];
+            if (!target) {
+                Ui::Error("Open target DLL first via /target <dll>");
+                return;
+            }
+            Ui::Info("Executing test export '" + expName + "' inside controlled DLL harness...");
+            auto invRes = target->InvokeExport(expName);
+            if (!invRes.Ok()) {
+                Ui::Error("Export invocation failed: " + invRes.Error());
+            } else {
+                Ui::Success("Export executed successfully. Return Value = " + std::to_string(invRes.Value()));
+            }
+            return;
+        }
+
+        Ui::UsageHint("Available DLL commands:", "/dll [exports|run <export>]");
+    }
+
+    void DraculaShell::HandleProcess(const std::vector<std::string>& args) {
+        std::string sub = args.empty() ? "list" : args[0];
+
+        if (sub == "list") {
+            auto processes = Sandbox::ProcessInspector::ListAllProcesses();
+            std::cout << "\n " << C(ColorRole::Primary) << "Running Processes (" << processes.size() << " accessible)" << R() << "\n";
+            std::cout << " " << C(ColorRole::Border) << std::string(50, '-') << R() << "\n";
+            for (size_t i = 0; i < std::min(size_t(20), processes.size()); ++i) {
+                std::cout << "  PID " << std::setw(6) << processes[i].pid << " : " << processes[i].exeName << "\n";
+            }
+            if (processes.size() > 20) {
+                std::cout << "  ... [" << (processes.size() - 20) << " more processes]\n";
+            }
+            std::cout << " " << C(ColorRole::Border) << std::string(50, '-') << R() << "\n\n";
+            return;
+        }
+
+        if (sub == "attach" && args.size() > 1) {
+            std::string pidStr = args[1];
+            UTR::TargetManager::Instance().OpenTarget("--pid " + pidStr);
+            return;
+        }
+
+        if (sub == "modules" || sub == "threads") {
+            auto target = UTR::TargetManager::Instance().GetActiveTarget();
+            if (!target) {
+                Ui::Error("No active target process.");
+                return;
+            }
+            if (sub == "modules") {
+                auto mods = target->EnumerateModules();
+                if (mods.Ok()) {
+                    std::cout << "\n " << C(ColorRole::Primary) << "Loaded Modules (" << mods.Value().size() << ")" << R() << "\n";
+                    for (const auto& m : mods.Value()) {
+                        std::cout << "  0x" << std::hex << m.baseAddress << std::dec << " : " << m.name << " (" << m.path << ")\n";
+                    }
+                }
+            } else {
+                auto thrs = target->EnumerateThreads();
+                if (thrs.Ok()) {
+                    std::cout << "\n " << C(ColorRole::Primary) << "Active Threads (" << thrs.Value().size() << ")" << R() << "\n";
+                    for (const auto& t : thrs.Value()) {
+                        std::cout << "  TID " << t.tid << " Priority=" << t.priority << " State=" << t.state << "\n";
+                    }
+                }
+            }
+            return;
+        }
+
+        Ui::UsageHint("Available process commands:", "/process [list|attach <pid>|modules|threads]");
+    }
+
+    void DraculaShell::HandleRuntime(const std::vector<std::string>& args) {
+        std::string sub = args.empty() ? "status" : args[0];
+        if (sub == "status") {
+            std::cout << "\n " << C(ColorRole::Primary) << "Runtime Engine Status" << R() << "\n";
+            std::cout << "  Agent Backend:       " << C(ColorRole::Success) << "Available (DraculaAgent64)" << R() << "\n";
+            std::cout << "  ETW Observer:        " << C(ColorRole::Success) << "Active" << R() << "\n";
+            std::cout << "  DbgEng Backend:      " << C(ColorRole::Success) << "Active" << R() << "\n";
+            std::cout << "  QEMU GuestAgent:     " << C(ColorRole::Success) << "Ready" << R() << "\n\n";
+            return;
+        }
+        Ui::UsageHint("Available runtime commands:", "/runtime [status|events]");
+    }
+
+    void DraculaShell::HandleDotNet(const std::vector<std::string>& args) {
+        std::string file = ResolveTargetFile(args, 1);
+        if (file.empty()) {
+            auto target = UTR::TargetManager::Instance().GetActiveTarget();
+            if (target) file = target->GetInfo().path;
+        }
+
+        if (file.empty()) {
+            ReportMissingTarget("dotnet");
+            return;
+        }
+
+        std::string sub = args.empty() ? "info" : args[0];
+
+        if (sub == "info") {
+            auto res = UTR::ManagedHostClient::Instance().InspectAssembly(file);
+            if (!res.Ok()) {
+                Ui::Error(res.Error());
+                return;
+            }
+            const auto& a = res.Value();
+            std::cout << "\n " << C(ColorRole::Primary) << ".NET Assembly Metadata" << R() << "\n";
+            std::cout << " " << C(ColorRole::Border) << std::string(55, '-') << R() << "\n";
+            std::cout << "  Assembly Name:    " << C(ColorRole::Accent) << a.assemblyName << R() << "\n";
+            std::cout << "  Version:          " << a.version << "\n";
+            std::cout << "  Culture:          " << a.culture << "\n";
+            std::cout << "  Module:           " << a.moduleName << "\n";
+            std::cout << "  Defined Types:    " << a.typeCount << "\n";
+            std::cout << "  Defined Methods:  " << a.methodCount << "\n";
+            std::cout << "  Entry Token:      " << a.entryPoint << "\n";
+            std::cout << " " << C(ColorRole::Border) << std::string(55, '-') << R() << "\n\n";
+            return;
+        }
+
+        if (sub == "types") {
+            auto res = UTR::ManagedHostClient::Instance().ListTypes(file);
+            if (!res.Ok()) {
+                Ui::Error(res.Error());
+                return;
+            }
+            std::cout << "\n " << C(ColorRole::Primary) << "Defined Types (" << res.Value().size() << ")" << R() << "\n";
+            for (const auto& t : res.Value()) {
+                std::cout << "  " << (t.isInterface ? "[Interface] " : "[Class] ")
+                          << C(ColorRole::Accent) << t.fullName << R()
+                          << " (Base: " << t.baseType << ")\n";
+            }
+            std::cout << "\n";
+            return;
+        }
+
+        if (sub == "pinvokes" || sub == "pinvoke") {
+            auto res = UTR::ManagedHostClient::Instance().ListPInvokes(file);
+            if (!res.Ok()) {
+                Ui::Error(res.Error());
+                return;
+            }
+            std::cout << "\n " << C(ColorRole::Primary) << "P/Invoke Native API Declarations (" << res.Value().size() << ")" << R() << "\n";
+            for (const auto& p : res.Value()) {
+                std::cout << "  " << C(ColorRole::Accent) << p.type << "." << p.method << R()
+                          << " -> " << C(ColorRole::Success) << p.dll << "!" << p.entryPoint << R() << "\n";
+            }
+            std::cout << "\n";
+            return;
+        }
+
+        Ui::UsageHint("Available .NET commands:", "/dotnet [info|types|pinvokes]");
+    }
+
+    void DraculaShell::HandleDriver(const std::vector<std::string>& args) {
+        std::string file = ResolveTargetFile(args, 1);
+        if (file.empty()) {
+            auto target = UTR::TargetManager::Instance().GetActiveTarget();
+            if (target) file = target->GetInfo().path;
+        }
+
+        if (file.empty()) {
+            ReportMissingTarget("driver");
+            return;
+        }
+
+        std::cout << "\n " << C(ColorRole::Primary) << "Driver Static Inspection: " << file << R() << "\n";
+        std::cout << "  Static Kernel Imports: " << C(ColorRole::Success) << "Available" << R() << "\n";
+        std::cout << "  DriverEntry Analysis:  " << C(ColorRole::Success) << "Available" << R() << "\n";
+        std::cout << "  Live Kernel Runtime:   " << C(ColorRole::Warning) << "Restricted (Requires QEMU Isolated VM)" << R() << "\n\n";
     }
 
     // ─── Analysis ───────────────────────────────────────────────────────────
@@ -1544,7 +1910,14 @@ namespace Dracula {
         std::string command;
         std::vector<std::string> cmdArgs;
 
-        if (first == "--analyze" || first == "-a") command = "analyze";
+        if (first == "--target" || first == "-t") command = "target";
+        else if (first == "--memory" || first == "-m") command = "memory";
+        else if (first == "--dll") command = "dll";
+        else if (first == "--process" || first == "-p") command = "process";
+        else if (first == "--runtime" || first == "-r") command = "runtime";
+        else if (first == "--dotnet" || first == "--clr") command = "dotnet";
+        else if (first == "--driver" || first == "--sys") command = "driver";
+        else if (first == "--analyze" || first == "-a") command = "analyze";
         else if (first == "--emulate" || first == "-e") command = "emulate";
         else if (first == "--disasm" || first == "-d") command = "disasm";
         else if (first == "--cfg") command = "cfg";

@@ -32,6 +32,21 @@ namespace Paths {
     // probing the executable directory and its ancestors for a marker file.
     std::string ResourceRoot();
 
+    // User data directory: %LOCALAPPDATA%\Dracula (or ~/.local/share/dracula on POSIX).
+    std::string AppDataDir();
+
+    // Directory for persistent session databases: %LOCALAPPDATA%\Dracula\sessions
+    std::string SessionsDir();
+
+    // Directory for structured analysis artifacts: %LOCALAPPDATA%\Dracula\artifacts
+    std::string ArtifactsDir();
+
+    // Directory for temporary runtime data: %TEMP%\Dracula
+    std::string TempDir();
+
+    // Override the base data directory (for tests or custom workspace configurations).
+    void SetCustomDataDir(const std::string& path);
+
     // Locate a shipped resource by relative name (e.g. "CHANGELOG.txt" or
     // "config/config.ini"). Search order: working directory, resource root,
     // executable directory, then executable ancestors. Returns "" when the

@@ -89,6 +89,125 @@ namespace Dracula {
         if (m_initialized) return;
         m_commands.clear();
 
+        // 0a. /target
+        Register({
+            .name = "target",
+            .aliases = {"t", "tgt"},
+            .description = "Open and fingerprint target (EXE, DLL, PID, Service, .NET, Driver, VM)",
+            .usage = "/target <path|--pid <pid>|--service <name>|--vm> [info|capabilities|close]",
+            .category = "Target",
+            .detailedHelp = "Universal Target Runtime entrypoint. Fingerprints binary format, opens target process, resolves service or isolated VM, and negotiates capabilities.",
+            .examples = {"/target samples\\test_sample.exe", "/target --pid 4820", "/target --service Spooler", "/target info", "/target capabilities"},
+            .takesFilePath = true,
+            .requiresArgs = false,
+            .argCompletions = {"info", "capabilities", "close", "--pid", "--service", "--vm"},
+            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
+                shell.HandleTarget(args);
+            }
+        });
+
+        // 0b. /memory
+        Register({
+            .name = "memory",
+            .aliases = {"mem", "m"},
+            .description = "Inspect virtual memory, capture Zstd snapshots, diff, and detect transformations",
+            .usage = "/memory [map|regions|read|search|snapshot|compare|transformations|dump]",
+            .category = "Memory",
+            .detailedHelp = "Memory Intelligence engine. Analyzes virtual memory layout, page protections (RW->RX), page entropy shifts, snapshot diffing, and runtime transformations.",
+            .examples = {"/memory map", "/memory snapshot", "/memory compare 1 2", "/memory transformations", "/memory dump 0x1000 4096"},
+            .takesFilePath = false,
+            .requiresArgs = false,
+            .argCompletions = {"map", "regions", "read", "search", "snapshot", "compare", "transformations", "dump"},
+            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
+                shell.HandleMemory(args);
+            }
+        });
+
+        // 0c. /dll
+        Register({
+            .name = "dll",
+            .aliases = {},
+            .description = "Inspect DLL exports, imports, dependencies, and invoke test harness",
+            .usage = "/dll [info|exports|imports|run <export>|trace]",
+            .category = "DLL",
+            .detailedHelp = "DLL intelligence and safe execution harness. Enumerates exported symbols and allows controlled, capability-gated execution of test exports.",
+            .examples = {"/dll info", "/dll exports", "/dll run AddNumbers"},
+            .takesFilePath = false,
+            .requiresArgs = false,
+            .argCompletions = {"info", "exports", "imports", "run", "trace"},
+            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
+                shell.HandleDll(args);
+            }
+        });
+
+        // 0d. /process
+        Register({
+            .name = "process",
+            .aliases = {"proc", "ps"},
+            .description = "Inspect live processes, modules, threads, and memory",
+            .usage = "/process [list|attach <pid>|modules|threads]",
+            .category = "Process",
+            .detailedHelp = "Live process inspection via DbgEng and external observation. Resolves loaded DLLs, threads, memory maps, and exports.",
+            .examples = {"/process list", "/process attach 1234", "/process modules", "/process threads"},
+            .takesFilePath = false,
+            .requiresArgs = false,
+            .argCompletions = {"list", "attach", "modules", "threads"},
+            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
+                shell.HandleProcess(args);
+            }
+        });
+
+        // 0e. /runtime
+        Register({
+            .name = "runtime",
+            .aliases = {"rt"},
+            .description = "Monitor runtime telemetry, API events, and execution trace",
+            .usage = "/runtime [start|stop|status|events|trace]",
+            .category = "Runtime",
+            .detailedHelp = "Runtime execution telemetry from optional Agent, ETW, or DbgEng.",
+            .examples = {"/runtime status", "/runtime events", "/runtime start", "/runtime stop"},
+            .takesFilePath = false,
+            .requiresArgs = false,
+            .argCompletions = {"start", "stop", "status", "events", "trace"},
+            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
+                shell.HandleRuntime(args);
+            }
+        });
+
+        // 0f. /dotnet
+        Register({
+            .name = "dotnet",
+            .aliases = {"clr", "net"},
+            .description = "Inspect .NET managed assemblies, types, methods, IL, and P/Invokes",
+            .usage = "/dotnet [info|types|method <Type> <Method>|strings|pinvokes]",
+            .category = "DotNet",
+            .detailedHelp = "ManagedHost .NET inspection. Parses assembly metadata, AppDomains, types, IL bytecode disassembly, and P/Invoke signatures.",
+            .examples = {"/dotnet info", "/dotnet types", "/dotnet method SecurityManager Authenticate", "/dotnet pinvokes"},
+            .takesFilePath = false,
+            .requiresArgs = false,
+            .argCompletions = {"info", "types", "method", "strings", "pinvokes"},
+            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
+                shell.HandleDotNet(args);
+            }
+        });
+
+        // 0g. /driver
+        Register({
+            .name = "driver",
+            .aliases = {"drv"},
+            .description = "Inspect Windows kernel drivers (.sys) and QEMU kernel isolation",
+            .usage = "/driver [info|imports|sections|runtime]",
+            .category = "Driver",
+            .detailedHelp = "Static kernel driver inspection (DriverEntry, sections, IRP handlers). Runtime observation is safely isolated to QEMU.",
+            .examples = {"/driver info", "/driver imports", "/driver sections"},
+            .takesFilePath = false,
+            .requiresArgs = false,
+            .argCompletions = {"info", "imports", "sections", "runtime"},
+            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
+                shell.HandleDriver(args);
+            }
+        });
+
         // 1. /analyze
         Register({
             .name = "analyze",

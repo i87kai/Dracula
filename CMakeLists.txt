@@ -3,9 +3,9 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.1.2 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.2.0 LANGUAGES C CXX RC)
 
-set(DRACULA_RELEASE_DATE "2026-08-17")
+set(DRACULA_RELEASE_DATE "2026-08-18")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
 
 configure_file(
@@ -54,10 +54,21 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/capstone/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd/common
+)
+
+file(GLOB ZSTD_SOURCES
+    "third_party/zstd/common/*.c"
+    "third_party/zstd/compress/*.c"
+    "third_party/zstd/decompress/*.c"
 )
 
 # ─── Core Source Files ──────────────────────────────────────────────────────
 set(DRACULA_CORE_SOURCES
+    third_party/sqlite/sqlite3.c
+    ${ZSTD_SOURCES}
     src/common/config.cpp
     src/common/findings.cpp
     src/common/paths.cpp
@@ -81,6 +92,22 @@ set(DRACULA_CORE_SOURCES
     src/core/anti_evasion_engine.cpp
     src/core/anti_evasion_report.cpp
     src/core/c_api.cpp
+    src/utr/evidence_graph.cpp
+    src/utr/memory_intelligence.cpp
+    src/utr/function_intelligence.cpp
+    src/utr/session_manager.cpp
+    src/utr/artifact_manager.cpp
+    src/utr/managed_backend.cpp
+    src/utr/dll_harness.cpp
+    src/utr/external_observer.cpp
+    src/utr/dbgeng_backend.cpp
+    src/utr/target_manager.cpp
+    src/utr/file_target.cpp
+    src/utr/process_target.cpp
+    src/utr/managed_target.cpp
+    src/utr/service_target.cpp
+    src/utr/driver_target.cpp
+    src/utr/analysis_orchestrator.cpp
     src/host/sandbox_fingerprint.cpp
     src/host/qemu_manager.cpp
     src/host/port_allocator.cpp
@@ -108,6 +135,9 @@ target_include_directories(DraculaCore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/capstone/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd/common
 )
 target_link_libraries(DraculaCore PUBLIC
     capstone
@@ -115,7 +145,7 @@ target_link_libraries(DraculaCore PUBLIC
 )
 
 if(WIN32)
-    target_link_libraries(DraculaCore PUBLIC ws2_32 iphlpapi psapi crypt32)
+    target_link_libraries(DraculaCore PUBLIC ws2_32 iphlpapi psapi crypt32 dbghelp ole32 oleaut32)
 endif()
 
 if(MINGW OR MSYS)
@@ -129,6 +159,14 @@ add_library(SandboxCore ALIAS DraculaCore)
 # ─── Dracula Primary Executable (Unified Host Frontend) ─────────────────────
 add_executable(Dracula src/main_dracula.cpp)
 target_link_libraries(Dracula PRIVATE DraculaCore)
+
+# ─── Dracula In-Process Telemetry Agent DLL ─────────────────────────────────
+add_library(DraculaAgent64 SHARED src/agent/dracula_agent.cpp)
+target_compile_definitions(DraculaAgent64 PRIVATE DRACULA_AGENT_EXPORTS)
+target_include_directories(DraculaAgent64 PUBLIC include)
+if(WIN32)
+    target_link_libraries(DraculaAgent64 PRIVATE psapi)
+endif()
 
 if(WIN32)
     if(MSVC)
@@ -240,4 +278,57 @@ if(BUILD_TESTS)
     add_executable(test_sandbox_network tests/test_sandbox_network.cpp)
     target_link_libraries(test_sandbox_network PRIVATE DraculaCore)
     add_test(NAME SandboxNetwork COMMAND test_sandbox_network)
+
+    # 6. Dependency Qualification POC Suite
+    add_executable(test_poc_qualification tests/poc_qualification.cpp)
+    target_link_libraries(test_poc_qualification PRIVATE DraculaCore)
+    add_test(NAME PocQualification COMMAND test_poc_qualification)
+
+    # 7. UTR Targets Abstraction Suite
+    add_executable(test_utr_targets tests/test_utr_targets.cpp)
+    target_link_libraries(test_utr_targets PRIVATE DraculaCore)
+    add_test(NAME UtrTargets COMMAND test_utr_targets)
+
+    # 8. Memory Intelligence & Transformation Suite
+    add_executable(test_memory_intelligence tests/test_memory_intelligence.cpp)
+    target_link_libraries(test_memory_intelligence PRIVATE DraculaCore)
+    add_test(NAME MemoryIntelligence COMMAND test_memory_intelligence)
+
+    # 9. Function Intelligence & Ranking Suite
+    add_executable(test_function_intelligence tests/test_function_intelligence.cpp)
+    target_link_libraries(test_function_intelligence PRIVATE DraculaCore)
+    add_test(NAME FunctionIntelligence COMMAND test_function_intelligence)
+
+    # 10. SQLite Session Persistence Suite
+    add_executable(test_session_persistence tests/test_session_persistence.cpp)
+    target_link_libraries(test_session_persistence PRIVATE DraculaCore)
+    add_test(NAME SessionPersistence COMMAND test_session_persistence)
+
+    # 11. ManagedHost .NET 10 Out-of-Process Backend Suite
+    add_executable(test_managed_backend tests/test_managed_backend.cpp)
+    target_link_libraries(test_managed_backend PRIVATE DraculaCore)
+    add_test(NAME ManagedBackend COMMAND test_managed_backend)
+
+    # 12. Evidence Graph & Behavior Chains Suite
+    add_executable(test_evidence_graph tests/test_evidence_graph.cpp)
+    target_link_libraries(test_evidence_graph PRIVATE DraculaCore)
+    add_test(NAME EvidenceGraph COMMAND test_evidence_graph)
+
+    # 13. MCP Protocol UTR Suite
+    add_executable(test_mcp_utr tests/test_mcp_utr.cpp)
+    target_link_libraries(test_mcp_utr PRIVATE DraculaCore)
+    add_test(NAME McpUtr COMMAND test_mcp_utr)
 endif()
+
+message(STATUS "")
+message(STATUS "─── Dracula Universal Target Runtime (UTR) Configuration Summary ───")
+message(STATUS "  Target Abstractions: Native EXE, Native DLL, Process PID, Service, .NET, Driver, VM")
+message(STATUS "  Vendored SQLite:     ENABLED (v3.46.1 amalgamation)")
+message(STATUS "  Vendored Zstd:       ENABLED (v1.5.6)")
+message(STATUS "  Capstone / Unicorn:  ENABLED (x86/x64 disassembly & CPU emulation)")
+message(STATUS "  ManagedHost (.NET):  ENABLED (Out-of-Process .NET 10 host)")
+message(STATUS "  DbgEng / DIA / ETW:  ENABLED (Windows SDK dynamic adapters)")
+message(STATUS "  In-Process Agent:    DraculaAgent64.dll")
+message(STATUS "  Data Directory:      %LOCALAPPDATA%\\Dracula (Clean Git repo)")
+message(STATUS "────────────────────────────────────────────────────────────────────")
+message(STATUS "")

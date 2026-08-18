@@ -1,0 +1,10 @@
+Unicorn CPU Emulator License
+
+Unicorn is released under LGPL v2.1 and GPL v2 (dual license):
+
+Copyright (c) 2015-2024, Nguyen Anh Quynh <aquynh@gmail.com> and contributors.
+All rights reserved.
+
+Licensed under the GNU Lesser General Public License, Version 2.1 (LGPLv2.1)
+and GNU General Public License, Version 2 (GPLv2).
+See upstream COPYING and COPYING.LGPL for complete terms.

@@ -1,4 +1,24 @@
 ============================================================
+Dracula v1.2.0
+Release: 2026-08-18
+============================================================
+
+Added
+-----
+- Universal Target Runtime (UTR): Unified abstraction layer for Native EXE, Native DLL, Process by PID, Windows Services, .NET Managed Assemblies, Kernel Drivers (.sys), and QEMU-isolated VM targets.
+- Third-Party Qualification Gate: Vendored SQLite 3.46.1 amalgamation and Zstandard (zstd) 1.5.6 with upstream license verification and isolated deterministic proof-of-concept tests.
+- Memory Intelligence: Virtual memory layout inspection, incremental Zstd-compressed snapshots, region diffing, and runtime transformation detection (e.g. PAGE_READWRITE -> PAGE_EXECUTE_READ code injection/unpacking).
+- Function Intelligence: Centralized function indexing with multi-criteria prioritization (InterestScore 0-100 decoupled from ThreatScore) and runtime execution correlation.
+- Evidence Graph: Structured fact model with explicit truth levels (Observed, Inferred, Suspected, Unknown), provenance tracing, and multi-step behavior chains.
+- Safe DLL Execution Harness: Read-only export enumeration and capability-gated safe test execution.
+- Managed Host (.NET 10): Out-of-process JSON-RPC backend for assembly metadata, type hierarchy, IL disassembly, strings, and P/Invoke declarations.
+- Live Process & Service Target Adapters: Non-invasive memory inspection, module/thread enumeration, and dynamic DbgEng/ETW telemetry adapters.
+- In-Process Telemetry Agent: DraculaAgent64 multi-architecture instrumentation DLL.
+- Session Persistence: High-performance SQLite session database in %LOCALAPPDATA%\Dracula\ with atomicity, snapshot storage, and markdown/JSON report exports.
+- Expanded MCP Toolset: 15 comprehensive tools for AI pair programming (target_open, analyze_quick, analyze_deep, memory_map, memory_snapshot, memory_diff, memory_transformations, list_functions, function_details, get_evidence, get_artifact_index, generate_report, inspect_assembly, list_types, list_pinvokes).
+- CLI Commands: /target, /memory, /dll, /process, /runtime, /dotnet, /driver.
+
+============================================================
 Dracula v1.1.2
 Release: 2026-08-17
 ============================================================

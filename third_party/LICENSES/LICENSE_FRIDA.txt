@@ -1,0 +1,7 @@
+Frida Gum License (LGPL v2.1+)
+
+Copyright (c) 2015-2024, Ole André Vadla Ravnås <oleavr@nowsecure.com>
+All rights reserved.
+
+Frida Gum is licensed under the GNU Lesser General Public License, Version 2.1
+or later. See upstream COPYING.LGPL for full terms.

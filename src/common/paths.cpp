@@ -77,6 +77,71 @@ namespace Paths {
         return cached;
     }
 
+    static std::string g_customDataDir = "";
+
+    void SetCustomDataDir(const std::string& path) {
+        g_customDataDir = path;
+    }
+
+    std::string AppDataDir() {
+        if (!g_customDataDir.empty()) {
+            try {
+                fs::create_directories(g_customDataDir);
+                return g_customDataDir;
+            } catch (...) {}
+        }
+        std::string base = "";
+#ifdef _WIN32
+        char buf[MAX_PATH] = {0};
+        DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", buf, sizeof(buf) - 1);
+        if (n > 0) {
+            base = (fs::path(buf) / "Dracula").string();
+        } else {
+            base = (fs::path(ExecutableDir()) / "data").string();
+        }
+#else
+        const char* home = getenv("HOME");
+        if (home) {
+            base = (fs::path(home) / ".local" / "share" / "dracula").string();
+        } else {
+            base = (fs::path(ExecutableDir()) / "data").string();
+        }
+#endif
+        try {
+            fs::create_directories(base);
+        } catch (...) {}
+        return base;
+    }
+
+    std::string SessionsDir() {
+        std::string dir = (fs::path(AppDataDir()) / "sessions").string();
+        try { fs::create_directories(dir); } catch (...) {}
+        return dir;
+    }
+
+    std::string ArtifactsDir() {
+        std::string dir = (fs::path(AppDataDir()) / "artifacts").string();
+        try { fs::create_directories(dir); } catch (...) {}
+        return dir;
+    }
+
+    std::string TempDir() {
+        std::string base = "";
+#ifdef _WIN32
+        char buf[MAX_PATH] = {0};
+        DWORD n = GetEnvironmentVariableA("TEMP", buf, sizeof(buf) - 1);
+        if (n > 0) {
+            base = (fs::path(buf) / "Dracula").string();
+        } else {
+            base = (fs::path(AppDataDir()) / "temp").string();
+        }
+#else
+        base = "/tmp/dracula";
+#endif
+        try { fs::create_directories(base); } catch (...) {}
+        return base;
+    }
+
     std::string ResolveResource(const std::string& relativeName) {
         std::vector<std::string> roots;
         roots.push_back(CurrentWorkingDir());

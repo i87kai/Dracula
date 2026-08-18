@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Dracula.ManagedFixture</RootNamespace>
+    <AssemblyName>ManagedFixture</AssemblyName>
+  </PropertyGroup>
+
+</Project>

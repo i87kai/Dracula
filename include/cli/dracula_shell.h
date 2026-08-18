@@ -41,6 +41,14 @@ namespace Dracula {
         std::string SessionStatusLine() const;
 
         // Public Command Handlers
+        void HandleTarget(const std::vector<std::string>& args);
+        void HandleMemory(const std::vector<std::string>& args);
+        void HandleDll(const std::vector<std::string>& args);
+        void HandleProcess(const std::vector<std::string>& args);
+        void HandleRuntime(const std::vector<std::string>& args);
+        void HandleDotNet(const std::vector<std::string>& args);
+        void HandleDriver(const std::vector<std::string>& args);
+
         void HandleAnalyze(const std::vector<std::string>& args);
         void HandleEmulate(const std::vector<std::string>& args);
         void HandleDisasm(const std::vector<std::string>& args);
