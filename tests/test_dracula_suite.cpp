@@ -725,7 +725,10 @@ static void TestCommandRegistryMetadata() {
         if (cmd.description.empty()) allHaveDescription = false;
         if (cmd.usage.empty()) allHaveUsage = false;
         if (cmd.category.empty()) allHaveCategory = false;
-        if (!cmd.handler) allHaveHandlers = false;
+        // A command is dispatchable via its legacy handler OR via registered
+        // subcommands. Project-centric commands (/project, /memory, /static,
+        // ...) are entirely subcommand-driven and carry no legacy handler.
+        if (!cmd.handler && cmd.subcommands.empty()) allHaveHandlers = false;
     }
 
     AssertTest(allHaveDescription, "All registered commands have descriptive summaries");

@@ -3,6 +3,8 @@
 #include "cli/text_layout.h"
 #include "cli/startup_card.h"
 #include "cli/ui.h"
+#include "app/services.h"
+#include "app/settings.h"
 #include "common/version.h"
 #include "common/paths.h"
 #include "common/input_validator.h"
@@ -430,91 +432,180 @@ namespace Dracula {
         }
 
         const auto* cmdDef = CommandRegistry::Instance().Find(cmdName);
-        if (cmdDef && cmdDef->handler) {
-            cmdDef->handler(*this, args);
-        } else {
+        if (!cmdDef) {
             Ui::Error("Unknown command: '" + tokens[0] + "'");
             Ui::Note("Type / to browse commands, or /help for the full reference.");
+            return true;
+        }
+
+        if (DispatchSubcommand(*cmdDef, args)) return true;
+
+        if (cmdDef->handler) {
+            cmdDef->handler(*this, args);
+        } else {
+            // A command with subcommands but no legacy handler: show exactly
+            // the subcommands the registry knows about, which is exactly what
+            // dispatch accepts.
+            RenderSubcommandList(*cmdDef);
         }
 
         return true;
     }
 
+    // Attempts registry-driven subcommand dispatch. Returns true when the
+    // command was handled here, false to fall through to a legacy handler.
+    bool DraculaShell::DispatchSubcommand(const CommandDefinition& cmdDef,
+                                          const std::vector<std::string>& args) {
+        if (cmdDef.subcommands.empty()) return false;
+
+        auto& registry = CommandRegistry::Instance();
+
+        std::string subName = args.empty() ? cmdDef.defaultSubcommand : args[0];
+        std::vector<std::string> subArgs;
+
+        const SubcommandDefinition* sub = registry.FindSubcommand(cmdDef, subName);
+
+        if (!args.empty() && sub) {
+            // The first token named a subcommand; the rest are its arguments.
+            subArgs.assign(args.begin() + 1, args.end());
+        } else if (!args.empty() && !sub) {
+            // Not a subcommand. A command that also accepts a bare operand
+            // (like "/target <path>") falls through to its legacy handler;
+            // otherwise this is a real error the user should see.
+            if (cmdDef.handler) return false;
+
+            App::ErrorDetail e;
+            e.code = "unknown_subcommand";
+            e.message = "'" + args[0] + "' is not a " + cmdDef.name + " subcommand.";
+            e.reason = "The subcommand did not match any registered handler.";
+            e.remediation = "Run /" + cmdDef.name + " on its own to see what is available.";
+            e.availableInstead = registry.SubcommandNames(cmdDef);
+            RenderResult(App::CommandResult::Failure(e));
+            return true;
+        } else if (args.empty() && !sub) {
+            // No arguments and no default: list the subcommands.
+            RenderSubcommandList(cmdDef);
+            return true;
+        }
+
+        // Capability gate BEFORE the handler runs, so the user gets a
+        // capability-aware explanation instead of an engine-level failure.
+        App::ErrorDetail requirementError;
+        if (!CommandRegistry::RequirementSatisfied(sub->requirement, requirementError)) {
+            RenderResult(App::CommandResult::Failure(requirementError));
+            return true;
+        }
+
+        if (!sub->handler) return false;
+
+        RenderResult(sub->handler(subArgs));
+        return true;
+    }
+
+    void DraculaShell::RenderSubcommandList(const CommandDefinition& cmdDef) {
+        std::cout << "\n " << C(ColorRole::Primary) << "/" << cmdDef.name << R()
+                  << "  " << C(ColorRole::Muted) << cmdDef.description << R() << "\n";
+        std::cout << " " << C(ColorRole::Border) << std::string(64, '-') << R() << "\n";
+
+        for (const auto& sub : cmdDef.subcommands) {
+            std::cout << "  " << C(ColorRole::Accent) << std::left << std::setw(14) << sub.name << R()
+                      << C(ColorRole::Text) << sub.description << R() << "\n";
+        }
+        std::cout << " " << C(ColorRole::Border) << std::string(64, '-') << R() << "\n\n";
+    }
+
+    // Renders a structured CommandResult for the terminal. This is the ONLY
+    // place application results become coloured text -- the services return
+    // pure data, which is what lets a future web adapter render them
+    // differently without touching an engine.
+    void DraculaShell::RenderResult(const App::CommandResult& result) {
+        if (result.ok) {
+            if (!result.summary.empty()) Ui::Success(result.summary);
+            for (const auto& line : result.lines) {
+                std::cout << "  " << C(ColorRole::Text) << line << R() << "\n";
+            }
+
+            for (const auto& ev : result.evidence) {
+                // Evidence level is the reader's cue for how much to trust a
+                // value: calculated, resolved, or actually read back.
+                ColorRole tone = ColorRole::Muted;
+                if (ev.level == "LIVE-READ VERIFIED") tone = ColorRole::Success;
+                else if (ev.level == "RESOLVED")      tone = ColorRole::Technical;
+
+                std::cout << "  " << C(tone) << "[" << ev.level << "]" << R()
+                          << " " << C(ColorRole::Muted) << ev.summary << R() << "\n";
+            }
+
+            for (const auto& art : result.artifacts) {
+                std::cout << "  " << C(ColorRole::Technical) << art.projectRelative << R()
+                          << C(ColorRole::Muted) << "  (" << art.rowCount << " rows)" << R() << "\n";
+            }
+            if (!result.lines.empty() || !result.artifacts.empty()) std::cout << "\n";
+            return;
+        }
+
+        // Failure: message, then WHY, then what to do, then what IS available.
+        Ui::Error(result.error.message.empty() ? result.summary : result.error.message);
+
+        if (!result.error.reason.empty()) {
+            std::cout << "  " << C(ColorRole::Muted) << result.error.reason << R() << "\n";
+        }
+        for (const auto& line : result.lines) {
+            std::cout << "  " << C(ColorRole::Text) << line << R() << "\n";
+        }
+        if (!result.error.remediation.empty()) {
+            std::cout << "  " << C(ColorRole::Accent) << result.error.remediation << R() << "\n";
+        }
+        if (!result.error.availableInstead.empty()) {
+            std::cout << "\n  " << C(ColorRole::Technical) << "Available for this target:" << R() << "\n";
+            for (const auto& cap : result.error.availableInstead) {
+                std::cout << "    " << C(ColorRole::Text) << cap << R() << "\n";
+            }
+        }
+        std::cout << "\n";
+    }
+
     // ─── UTR Universal Target Handlers ─────────────────────────────────────
 
     void DraculaShell::HandleTarget(const std::vector<std::string>& args) {
-        if (args.empty() || args[0] == "info") {
-            auto target = UTR::TargetManager::Instance().GetActiveTarget();
-            if (!target) {
-                Ui::UsageHint("No active target. Open a target first.", "/target <file|--pid <pid>|--service <name>|--vm>");
-                return;
+        // info / capabilities / close are registry subcommands and never reach
+        // here. What remains is opening a target, which now means creating or
+        // continuing a durable project.
+        if (args.empty()) {
+            auto project = App::ProjectManager::Instance().Active();
+            if (project) {
+                RenderResult(App::TargetService::Instance().Info());
+            } else {
+                Ui::UsageHint("No active target.", "/target <file>  or  /process attach <pid>");
             }
-            auto info = target->GetInfo();
-            auto caps = target->GetCapabilities();
-
-            std::cout << "\n " << C(ColorRole::Primary) << "Universal Target Information" << R() << "\n";
-            std::cout << " " << C(ColorRole::Border) << std::string(60, '-') << R() << "\n";
-            std::cout << "  " << C(ColorRole::Technical) << "Name:         " << R() << C(ColorRole::Accent) << info.name << R() << "\n";
-            std::cout << "  " << C(ColorRole::Technical) << "Kind:         " << R() << C(ColorRole::Text) << UTR::TargetKindToString(info.kind) << R() << "\n";
-            std::cout << "  " << C(ColorRole::Technical) << "Path:         " << R() << C(ColorRole::Text) << info.path << R() << "\n";
-            std::cout << "  " << C(ColorRole::Technical) << "Architecture: " << R() << C(ColorRole::Text) << info.architecture << R() << "\n";
-            std::cout << "  " << C(ColorRole::Technical) << "Backend:      " << R() << C(ColorRole::Success) << info.activeBackend << R() << "\n";
-            std::cout << "  " << C(ColorRole::Technical) << "Capabilities: " << R() << C(ColorRole::Text) << caps.Summary() << R() << "\n";
-            if (!info.sha256.empty()) {
-                std::cout << "  " << C(ColorRole::Technical) << "SHA-256:      " << R() << C(ColorRole::Muted) << info.sha256 << R() << "\n";
-            }
-            std::cout << " " << C(ColorRole::Border) << std::string(60, '-') << R() << "\n\n";
             return;
         }
 
-        if (args[0] == "capabilities" || args[0] == "caps") {
-            auto target = UTR::TargetManager::Instance().GetActiveTarget();
-            if (!target) {
-                Ui::Error("No active target loaded.");
-                return;
-            }
-            auto caps = target->GetCapabilities();
-            std::cout << "\n " << C(ColorRole::Primary) << "Target Capabilities Matrix" << R() << "\n";
-            std::cout << " " << C(ColorRole::Border) << std::string(50, '-') << R() << "\n";
-            std::cout << "  Static Analysis:    " << (caps.staticAnalysis ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Module Enumeration: " << (caps.modules ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Thread Visibility:  " << (caps.threads ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Memory Read:        " << (caps.memoryRead ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Memory Snapshots:   " << (caps.memorySnapshots ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Runtime Events:     " << (caps.runtimeEvents ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Function Graph/CFG: " << (caps.functions ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Symbols & PDB:      " << (caps.symbols ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Managed .NET Meta:  " << (caps.managedMetadata ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Debug Control:      " << (caps.debugControl ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  QEMU Sandbox Exec:  " << (caps.sandboxExecution ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << "  Kernel Observation: " << (caps.kernelObservation ? C(ColorRole::Success) + "YES" : C(ColorRole::Muted) + "NO") << R() << "\n";
-            std::cout << " " << C(ColorRole::Border) << std::string(50, '-') << R() << "\n\n";
+        // A PID must be given to /process attach, which represents it as a PID.
+        // Accepting "--pid N" here is what let a specifier become a path.
+        if (args[0] == "--pid" || args[0] == "-p") {
+            App::ErrorDetail e;
+            e.code = "moved_command";
+            e.message = "Use /process attach to open a running process.";
+            e.reason = "/target opens file-backed targets; a PID is not a path.";
+            e.remediation = args.size() > 1
+                ? ("Run: /process attach " + args[1])
+                : std::string("Run: /process attach <pid>");
+            RenderResult(App::CommandResult::Failure(e));
             return;
         }
 
-        if (args[0] == "close") {
-            UTR::TargetManager::Instance().CloseActiveTarget();
-            m_activeFile.clear();
-            m_sessionResult.reset();
-            Ui::Success("Active target closed.");
+        if (args[0] == "--service" || args[0] == "-s") {
+            App::ErrorDetail e;
+            e.code = "unsupported_target";
+            e.message = "Service targets are not yet project-backed.";
+            e.reason = "Service analysis has not been migrated to durable projects.";
+            e.remediation = "Open the service's executable directly with /target <path>.";
+            RenderResult(App::CommandResult::Failure(e));
             return;
         }
 
-        // Open target
-        std::string targetSpec = args[0];
-        if (args.size() > 1 && (targetSpec == "--pid" || targetSpec == "-p" || targetSpec == "--service" || targetSpec == "-s")) {
-            targetSpec += " " + args[1];
-        }
-
-        auto res = UTR::TargetManager::Instance().OpenTarget(targetSpec);
-        if (!res.Ok()) {
-            Ui::Error("Failed to open target: " + res.Error());
-            return;
-        }
-
-        auto info = res.Value()->GetInfo();
-        m_activeFile = info.path;
-        Ui::Success("Target opened: " + info.name + " (" + UTR::TargetKindToString(info.kind) + ")");
+        RenderResult(App::ProjectService::Instance().OpenFile(args[0]));
     }
 
     void DraculaShell::HandleMemory(const std::vector<std::string>& args) {

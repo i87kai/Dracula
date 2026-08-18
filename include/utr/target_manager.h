@@ -29,6 +29,13 @@ namespace UTR {
         Result<std::shared_ptr<ITarget>> OpenTarget(const std::string& targetSpecifier,
                                                     const std::string& typeHint = "");
 
+        // Opens a target from an already-resolved TargetInfo, bypassing string
+        // fingerprinting entirely. This is the entry point the application
+        // service layer uses: a project already knows its target's kind, PID
+        // and backing image, so re-parsing a command string (which is how
+        // "--pid 17140" once became a file path) is both wasteful and unsafe.
+        Result<std::shared_ptr<ITarget>> OpenTargetFromInfo(const TargetInfo& info);
+
         std::shared_ptr<ITarget> GetActiveTarget() const;
         TargetInfo GetActiveTargetInfo() const;
         TargetCapabilities GetActiveCapabilities() const;

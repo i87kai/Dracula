@@ -41,6 +41,16 @@ namespace Dracula {
         std::string SessionStatusLine() const;
 
         // Public Command Handlers
+        // Registry-driven dispatch. Subcommands resolve through
+        // CommandRegistry so the palette, help and dispatch cannot diverge.
+        bool DispatchSubcommand(const CommandDefinition& cmdDef,
+                                const std::vector<std::string>& args);
+        void RenderSubcommandList(const CommandDefinition& cmdDef);
+
+        // The single place a structured application result becomes terminal
+        // text. Services stay free of presentation concerns.
+        void RenderResult(const App::CommandResult& result);
+
         void HandleTarget(const std::vector<std::string>& args);
         void HandleMemory(const std::vector<std::string>& args);
         void HandleDll(const std::vector<std::string>& args);

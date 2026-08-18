@@ -132,6 +132,42 @@ namespace UTR {
         return info;
     }
 
+    // Instantiates the concrete backend for an already-classified target.
+    static std::shared_ptr<ITarget> InstantiateTarget(const TargetInfo& info) {
+        switch (info.kind) {
+            case TargetKind::NativeExe:
+            case TargetKind::NativeDll:
+                return CreateFileTarget(info);
+            case TargetKind::RunningProcess:
+                return CreateProcessTarget(info);
+            case TargetKind::ManagedExe:
+            case TargetKind::ManagedDll:
+                return CreateManagedTarget(info);
+            case TargetKind::Service:
+                return CreateServiceTarget(info);
+            case TargetKind::Driver:
+                return CreateDriverTarget(info);
+            case TargetKind::VmTarget:
+            default:
+                return CreateFileTarget(info);
+        }
+    }
+
+    Result<std::shared_ptr<ITarget>> TargetManager::OpenTargetFromInfo(const TargetInfo& info) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        CloseActiveTarget();
+
+        std::shared_ptr<ITarget> target = InstantiateTarget(info);
+        if (!target) {
+            return Result<std::shared_ptr<ITarget>>::Fail(
+                std::string("could not instantiate a ") + TargetKindToString(info.kind) + " backend");
+        }
+
+        m_activeTarget = target;
+        m_evidenceGraph.Clear();
+        return Result<std::shared_ptr<ITarget>>::Success(m_activeTarget);
+    }
+
     Result<std::shared_ptr<ITarget>> TargetManager::OpenTarget(
         const std::string& targetSpecifier,
         const std::string& typeHint)

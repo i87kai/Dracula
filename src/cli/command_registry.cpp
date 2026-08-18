@@ -1,6 +1,10 @@
 #include "cli/command_registry.h"
 #include "cli/dracula_shell.h"
+#include "app/services.h"
+#include "app/settings.h"
+
 #include <algorithm>
+#include <cctype>
 
 namespace Dracula {
 
@@ -61,6 +65,91 @@ namespace Dracula {
         return matches;
     }
 
+    const SubcommandDefinition* CommandRegistry::FindSubcommand(const CommandDefinition& cmd,
+                                                                const std::string& name) const {
+        if (name.empty()) return nullptr;
+
+        std::string query = name;
+        std::transform(query.begin(), query.end(), query.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        for (const auto& sub : cmd.subcommands) {
+            if (sub.name == query) return &sub;
+        }
+
+        // Unambiguous prefix, so "/memory snap" reaches "snapshot". An
+        // ambiguous prefix resolves to nothing rather than to a guess.
+        const SubcommandDefinition* match = nullptr;
+        for (const auto& sub : cmd.subcommands) {
+            if (sub.name.rfind(query, 0) == 0) {
+                if (match) return nullptr;
+                match = &sub;
+            }
+        }
+        return match;
+    }
+
+    std::vector<std::string> CommandRegistry::SubcommandNames(const CommandDefinition& cmd) const {
+        std::vector<std::string> names;
+        names.reserve(cmd.subcommands.size());
+        for (const auto& sub : cmd.subcommands) names.push_back(sub.name);
+        return names;
+    }
+
+    std::string CommandRegistry::DescribeRequirement(CommandRequirement req) {
+        switch (req) {
+            case CommandRequirement::None:          return "always available";
+            case CommandRequirement::ActiveProject: return "an open project";
+            case CommandRequirement::FileBacking:   return "a file-backed target";
+            case CommandRequirement::LiveProcess:   return "a running process";
+            case CommandRequirement::ManagedTarget: return "a .NET target";
+        }
+        return "unknown";
+    }
+
+    bool CommandRegistry::RequirementSatisfied(CommandRequirement req, App::ErrorDetail& errorOut) {
+        using namespace Dracula::App;
+
+        if (req == CommandRequirement::None) return true;
+
+        auto project = ProjectManager::Instance().Active();
+        if (!project) {
+            errorOut = NoActiveProjectError();
+            return false;
+        }
+        if (req == CommandRequirement::ActiveProject) return true;
+
+        const auto& target = project->Target();
+        switch (req) {
+            case CommandRequirement::FileBacking:
+                if (!project->StaticAnalysisPath().empty()) return true;
+                errorOut = CapabilityError(*project, "This command",
+                    target.IsLiveProcess()
+                        ? "The live process backing executable could not be resolved."
+                        : "The project sample is no longer on disk.");
+                return false;
+
+            case CommandRequirement::LiveProcess:
+                if (target.IsLiveProcess()) return true;
+                errorOut = CapabilityError(*project, "This command",
+                    "It requires a running process; this project is backed by a file on disk.");
+                return false;
+
+            case CommandRequirement::ManagedTarget:
+                if (target.isDotNet ||
+                    target.kind == UTR::TargetKind::ManagedExe ||
+                    target.kind == UTR::TargetKind::ManagedDll) {
+                    return true;
+                }
+                errorOut = CapabilityError(*project, ".NET metadata analysis",
+                    "This target is native code; it carries no .NET metadata.");
+                return false;
+
+            default:
+                return true;
+        }
+    }
+
     const std::vector<CommandDefinition>& CommandRegistry::GetAllCommands() const {
         return m_commands;
     }
@@ -89,89 +178,481 @@ namespace Dracula {
         if (m_initialized) return;
         m_commands.clear();
 
-        // 0a. /target
+        // --- Project & Session --------------------------------------------
+        // Sessions are a user-friendly view over the SAME durable projects.
+        // There is exactly one persistence system.
+        Register({
+            .name = "project",
+            .aliases = {"proj"},
+            .description = "Manage durable analysis projects",
+            .usage = "/project [info|list|open|new|close|storage|cleanup|delete]",
+            .category = "Project",
+            .detailedHelp = "A project is Dracula's durable workspace: the immutable original sample, "
+                            "static and runtime artifacts, memory snapshots, reports and logs. Projects "
+                            "survive exit and are reopened by ID or name.",
+            .examples = {"/project info", "/project list", "/project open 7f31", "/project storage",
+                         "/project cleanup", "/project delete 7f31 --force"},
+            .requirement = CommandRequirement::None,
+            .subcommands = {
+                {"info", "Show the active project", "/project info",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProjectService::Instance().Info(); }},
+
+                {"list", "List all durable projects", "/project list",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProjectService::Instance().List(); }},
+
+                {"open", "Open a project by ID or name", "/project open <id|name>",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>& a) {
+                     return App::ProjectService::Instance().Open(a.empty() ? "" : a[0]);
+                 }},
+
+                {"new", "Create an independent project for a file", "/project new <path>",
+                 {}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     if (a.empty()) {
+                         return App::CommandResult::Failure("missing_argument",
+                             "No file specified.", "/project new needs a path.");
+                     }
+                     // forceNew: always an independent project, even for a
+                     // sample that already has one.
+                     return App::ProjectService::Instance().OpenFile(a[0], true);
+                 }},
+
+                {"close", "Close the active project", "/project close",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProjectService::Instance().Close(); }},
+
+                {"storage", "Show measured disk usage", "/project storage",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProjectService::Instance().Storage(); }},
+
+                {"cleanup", "Remove disposable data, keep evidence", "/project cleanup [id|name]",
+                 {}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     return App::ProjectService::Instance().Cleanup(a.empty() ? "" : a[0]);
+                 }},
+
+                {"delete", "Delete a project workspace", "/project delete <id|name> [--force]",
+                 {"--force"}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     std::string id;
+                     bool force = false;
+                     for (const auto& arg : a) {
+                         if (arg == "--force" || arg == "-f") force = true;
+                         else if (id.empty()) id = arg;
+                     }
+                     return App::ProjectService::Instance().Delete(id, force);
+                 }},
+            },
+            .defaultSubcommand = "info",
+            .argCompletions = {"info", "list", "open", "new", "close", "storage", "cleanup", "delete"},
+        });
+
+        Register({
+            .name = "session",
+            .aliases = {"sess"},
+            .description = "Work with saved sessions (a view over durable projects)",
+            .usage = "/session [list|use|info|cleanup|delete]",
+            .category = "Project",
+            .detailedHelp = "Sessions and projects are the same durable workspaces. These subcommands "
+                            "are provided for convenience and operate on exactly the same storage as "
+                            "/project, so there is never conflicting state.",
+            .examples = {"/session list", "/session use 7f31", "/session cleanup", "/session delete 7f31"},
+            .requirement = CommandRequirement::None,
+            .subcommands = {
+                {"list", "List saved sessions", "/session list",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProjectService::Instance().List(); }},
+
+                {"use", "Switch to a session", "/session use <id|name>",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>& a) {
+                     return App::ProjectService::Instance().Open(a.empty() ? "" : a[0]);
+                 }},
+
+                {"info", "Show the active session", "/session info",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProjectService::Instance().Info(); }},
+
+                {"cleanup", "Remove disposable data", "/session cleanup [id|name]",
+                 {}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     return App::ProjectService::Instance().Cleanup(a.empty() ? "" : a[0]);
+                 }},
+
+                {"delete", "Delete a session workspace", "/session delete <id|name> [--force]",
+                 {"--force"}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     std::string id;
+                     bool force = false;
+                     for (const auto& arg : a) {
+                         if (arg == "--force" || arg == "-f") force = true;
+                         else if (id.empty()) id = arg;
+                     }
+                     return App::ProjectService::Instance().Delete(id, force);
+                 }},
+            },
+            .defaultSubcommand = "list",
+            .argCompletions = {"list", "use", "info", "cleanup", "delete"},
+        });
+
+        // --- Target -------------------------------------------------------
         Register({
             .name = "target",
             .aliases = {"t", "tgt"},
-            .description = "Open and fingerprint target (EXE, DLL, PID, Service, .NET, Driver, VM)",
-            .usage = "/target <path|--pid <pid>|--service <name>|--vm> [info|capabilities|close]",
+            .description = "Open a target, or inspect the active one",
+            .usage = "/target <path> | /target [info|capabilities|close]",
             .category = "Target",
-            .detailedHelp = "Universal Target Runtime entrypoint. Fingerprints binary format, opens target process, resolves service or isolated VM, and negotiates capabilities.",
-            .examples = {"/target samples\\test_sample.exe", "/target --pid 4820", "/target --service Spooler", "/target info", "/target capabilities"},
+            .detailedHelp = "Opening a target creates or continues a durable project for it. "
+                            "A PID is recorded as a PID and its backing executable resolved separately, "
+                            "so a target specifier is never stored as a file path.",
+            .examples = {"/target samples\\test_sample.exe", "/target info", "/target capabilities"},
             .takesFilePath = true,
-            .requiresArgs = false,
-            .argCompletions = {"info", "capabilities", "close", "--pid", "--service", "--vm"},
+            .requirement = CommandRequirement::None,
+            .subcommands = {
+                {"info", "Show the active target", "/target info",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::TargetService::Instance().Info(); }},
+
+                {"capabilities", "Show what this target supports", "/target capabilities",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::TargetService::Instance().Capabilities(); }},
+
+                {"close", "Close the active target and project", "/target close",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProjectService::Instance().Close(); }},
+            },
+            .argCompletions = {"info", "capabilities", "close"},
             .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
                 shell.HandleTarget(args);
             }
         });
 
-        // 0b. /memory
+        // --- Static analysis ----------------------------------------------
+        // Works on a process project too: it resolves the backing executable.
+        Register({
+            .name = "static",
+            .aliases = {"st"},
+            .description = "Static analysis of the project's image",
+            .usage = "/static [info|sections|imports|exports|strings]",
+            .category = "Analysis",
+            .detailedHelp = "Static analysis always runs against the project's file backing. For a "
+                            "process-backed project that is the resolved backing executable, so /static "
+                            "works without reopening anything.",
+            .examples = {"/static", "/static sections", "/static imports", "/static strings"},
+            .requirement = CommandRequirement::FileBacking,
+            .subcommands = {
+                {"info", "Headers, entry point and mitigations", "/static info",
+                 {}, CommandRequirement::FileBacking, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::StaticService::Instance().Info(); }},
+
+                {"sections", "Section table with entropy", "/static sections",
+                 {}, CommandRequirement::FileBacking, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::StaticService::Instance().Sections(); }},
+
+                {"imports", "Imported symbols", "/static imports",
+                 {}, CommandRequirement::FileBacking, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::StaticService::Instance().Imports(); }},
+
+                {"exports", "Exported symbols", "/static exports",
+                 {}, CommandRequirement::FileBacking, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::StaticService::Instance().Exports(); }},
+
+                {"strings", "Extracted and classified strings", "/static strings [minlen]",
+                 {}, CommandRequirement::FileBacking, CommandSafety::Safe,
+                 [](const std::vector<std::string>& a) {
+                     size_t minLen = 4;
+                     if (!a.empty()) {
+                         try { minLen = static_cast<size_t>(std::stoul(a[0])); } catch (...) {}
+                     }
+                     return App::StaticService::Instance().Strings(minLen);
+                 }},
+            },
+            .defaultSubcommand = "info",
+            .argCompletions = {"info", "sections", "imports", "exports", "strings"},
+        });
+
+        // --- Memory -------------------------------------------------------
         Register({
             .name = "memory",
             .aliases = {"mem", "m"},
-            .description = "Inspect virtual memory, capture Zstd snapshots, diff, and detect transformations",
-            .usage = "/memory [map|regions|read|search|snapshot|compare|transformations|dump]",
+            .description = "Inspect virtual memory, capture snapshots and diff them",
+            .usage = "/memory [map|read|snapshot|snapshots|compare]",
             .category = "Memory",
-            .detailedHelp = "Memory Intelligence engine. Analyzes virtual memory layout, page protections (RW->RX), page entropy shifts, snapshot diffing, and runtime transformations.",
-            .examples = {"/memory map", "/memory snapshot", "/memory compare 1 2", "/memory transformations", "/memory dump 0x1000 4096"},
-            .takesFilePath = false,
-            .requiresArgs = false,
-            .argCompletions = {"map", "regions", "read", "search", "snapshot", "compare", "transformations", "dump"},
-            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
-                shell.HandleMemory(args);
-            }
+            .detailedHelp = "Memory Intelligence. Snapshot IDs are allocated from the project and "
+                            "persist across restarts, so /memory compare works on snapshots captured "
+                            "in an earlier session.",
+            .examples = {"/memory map", "/memory read 0x7FF000 256", "/memory snapshot before",
+                         "/memory compare before after"},
+            .requirement = CommandRequirement::LiveProcess,
+            .subcommands = {
+                {"map", "Summarize the memory map", "/memory map",
+                 {}, CommandRequirement::LiveProcess, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::MemoryService::Instance().Map(); }},
+
+                {"read", "Read and hex-dump memory", "/memory read <address> <size>",
+                 {}, CommandRequirement::LiveProcess, CommandSafety::Safe,
+                 [](const std::vector<std::string>& a) {
+                     if (a.size() < 2) {
+                         return App::CommandResult::Failure("missing_argument",
+                             "Address and size are required.",
+                             "/memory read takes an address and a byte count.",
+                             "Example: /memory read 0x7FFE8FD0000 256");
+                     }
+                     uint64_t address = 0;
+                     size_t size = 0;
+                     try {
+                         address = std::stoull(a[0], nullptr, 0);
+                         size = static_cast<size_t>(std::stoull(a[1], nullptr, 0));
+                     } catch (...) {
+                         return App::CommandResult::Failure("invalid_argument",
+                             "Could not parse the address or size.",
+                             "Both must be numeric; 0x-prefixed hex is accepted.");
+                     }
+                     return App::MemoryService::Instance().Read(address, size);
+                 }},
+
+                {"snapshot", "Capture a memory snapshot", "/memory snapshot [name]",
+                 {}, CommandRequirement::LiveProcess, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     return App::MemoryService::Instance().Snapshot(a.empty() ? "" : a[0]);
+                 }},
+
+                {"snapshots", "List captured snapshots", "/memory snapshots",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::MemoryService::Instance().ListSnapshots(); }},
+
+                {"compare", "Diff two snapshots", "/memory compare <a> <b>",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>& a) {
+                     if (a.size() < 2) {
+                         return App::CommandResult::Failure("missing_argument",
+                             "Two snapshots are required.",
+                             "/memory compare takes two snapshot IDs or labels.",
+                             "List them with /memory snapshots.");
+                     }
+                     return App::MemoryService::Instance().Compare(a[0], a[1]);
+                 }},
+            },
+            .defaultSubcommand = "map",
+            .argCompletions = {"map", "read", "snapshot", "snapshots", "compare"},
         });
 
-        // 0c. /dll
+        // --- DLL ----------------------------------------------------------
+        // Every advertised subcommand below is dispatchable. The v1.2.4
+        // palette listed "info|imports|trace" while only "exports|run" worked.
         Register({
             .name = "dll",
             .aliases = {},
-            .description = "Inspect DLL exports, imports, dependencies, and invoke test harness",
-            .usage = "/dll [info|exports|imports|run <export>|trace]",
+            .description = "Correlate a DLL's on-disk image with its loaded module",
+            .usage = "/dll [info|exports|imports|functions] [name]",
             .category = "DLL",
-            .detailedHelp = "DLL intelligence and safe execution harness. Enumerates exported symbols and allows controlled, capability-gated execution of test exports.",
-            .examples = {"/dll info", "/dll exports", "/dll run AddNumbers"},
-            .takesFilePath = false,
-            .requiresArgs = false,
-            .argCompletions = {"info", "exports", "imports", "run", "trace"},
-            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
-                shell.HandleDll(args);
-            }
+            .detailedHelp = "Resolves a module within the ACTIVE project without replacing its target. "
+                            "When the module is loaded, static RVAs are correlated to live virtual "
+                            "addresses and a sample of them is verified by real memory reads.",
+            .examples = {"/dll info windowscodecs.dll", "/dll exports windowscodecs.dll",
+                         "/dll functions windowscodecs.dll"},
+            .requirement = CommandRequirement::ActiveProject,
+            .subcommands = {
+                {"info", "Module identity and load state", "/dll info [name]",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>& a) {
+                     return App::DllService::Instance().Info(a.empty() ? "" : a[0]);
+                 }},
+
+                {"exports", "Exports with static/live correlation", "/dll exports [name]",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>& a) {
+                     return App::DllService::Instance().Exports(a.empty() ? "" : a[0]);
+                 }},
+
+                {"imports", "Imported symbols", "/dll imports [name]",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>& a) {
+                     return App::DllService::Instance().Imports(a.empty() ? "" : a[0]);
+                 }},
+
+                {"functions", "Discovered functions with runtime addresses", "/dll functions [name]",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>& a) {
+                     return App::DllService::Instance().Functions(a.empty() ? "" : a[0]);
+                 }},
+            },
+            .defaultSubcommand = "info",
+            .argCompletions = {"info", "exports", "imports", "functions"},
         });
 
-        // 0d. /process
+        // --- Process ------------------------------------------------------
         Register({
             .name = "process",
             .aliases = {"proc", "ps"},
-            .description = "Inspect live processes, modules, threads, and memory",
-            .usage = "/process [list|attach <pid>|modules|threads]",
+            .description = "Inspect live processes, modules and threads",
+            .usage = "/process [list|attach <pid>|info|modules|threads]",
             .category = "Process",
-            .detailedHelp = "Live process inspection via DbgEng and external observation. Resolves loaded DLLs, threads, memory maps, and exports.",
-            .examples = {"/process list", "/process attach 1234", "/process modules", "/process threads"},
-            .takesFilePath = false,
-            .requiresArgs = false,
-            .argCompletions = {"list", "attach", "modules", "threads"},
-            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
-                shell.HandleProcess(args);
-            }
+            .detailedHelp = "Attaching resolves the process's backing executable and copies it into the "
+                            "project, so static analysis keeps working after the process exits.",
+            .examples = {"/process list", "/process attach 17140", "/process modules", "/process threads"},
+            .requirement = CommandRequirement::None,
+            .subcommands = {
+                {"list", "List accessible processes", "/process list",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProcessService::Instance().List(); }},
+
+                {"attach", "Attach to a running process", "/process attach <pid>",
+                 {}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     if (a.empty()) {
+                         return App::CommandResult::Failure("missing_argument",
+                             "No PID specified.", "/process attach needs a numeric PID.",
+                             "List candidates with /process list.");
+                     }
+                     uint32_t pid = 0;
+                     try {
+                         pid = static_cast<uint32_t>(std::stoul(a[0]));
+                     } catch (...) {
+                         return App::CommandResult::Failure("invalid_argument",
+                             "'" + a[0] + "' is not a valid PID.",
+                             "A PID is a positive integer.");
+                     }
+                     return App::ProjectService::Instance().AttachProcess(pid);
+                 }},
+
+                {"info", "Show the attached process", "/process info",
+                 {}, CommandRequirement::LiveProcess, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProcessService::Instance().Info(); }},
+
+                {"modules", "List loaded modules", "/process modules",
+                 {}, CommandRequirement::LiveProcess, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProcessService::Instance().Modules(); }},
+
+                {"threads", "List threads", "/process threads",
+                 {}, CommandRequirement::LiveProcess, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::ProcessService::Instance().Threads(); }},
+            },
+            .defaultSubcommand = "list",
+            .argCompletions = {"list", "attach", "info", "modules", "threads"},
         });
 
-        // 0e. /runtime
+        // --- Runtime ------------------------------------------------------
         Register({
             .name = "runtime",
             .aliases = {"rt"},
-            .description = "Monitor runtime telemetry, API events, and execution trace",
-            .usage = "/runtime [start|stop|status|events|trace]",
+            .description = "Runtime backend status and recorded events",
+            .usage = "/runtime [status|events]",
             .category = "Runtime",
-            .detailedHelp = "Runtime execution telemetry from optional Agent, ETW, or DbgEng.",
-            .examples = {"/runtime status", "/runtime events", "/runtime start", "/runtime stop"},
-            .takesFilePath = false,
-            .requiresArgs = false,
-            .argCompletions = {"start", "stop", "status", "events", "trace"},
-            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
-                shell.HandleRuntime(args);
-            }
+            .detailedHelp = "Status reports the state each backend can actually prove. A binary that is "
+                            "merely installed reports Installed, never Ready, and a guest agent reports "
+                            "Connected only when a VM session exists.",
+            .examples = {"/runtime status", "/runtime events"},
+            .requirement = CommandRequirement::None,
+            .subcommands = {
+                {"status", "Truthful backend readiness", "/runtime status",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::RuntimeService::Instance().Status(); }},
+
+                {"events", "Recorded runtime events", "/runtime events",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) { return App::RuntimeService::Instance().Events(); }},
+            },
+            .defaultSubcommand = "status",
+            .argCompletions = {"status", "events"},
+        });
+
+        // --- Settings -----------------------------------------------------
+        Register({
+            .name = "settings",
+            .aliases = {"set"},
+            .description = "View and change Dracula settings",
+            .usage = "/settings [list|set <key> <value>]",
+            .category = "System",
+            .detailedHelp = "Persistent user preferences such as report auto-open and default format.",
+            .examples = {"/settings list", "/settings set reports.auto_open true"},
+            .requirement = CommandRequirement::None,
+            .subcommands = {
+                {"list", "Show all settings", "/settings list",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) {
+                     auto r = App::CommandResult::Success("Settings");
+                     for (const auto& e : App::Settings::Instance().Describe()) {
+                         r.Line(e.key + " = " + e.value);
+                         r.Line("    " + e.description);
+                     }
+                     r.Line("Stored in " + App::Settings::Instance().Path());
+                     return r;
+                 }},
+
+                {"set", "Change a setting", "/settings set <key> <value>",
+                 {}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>& a) {
+                     if (a.size() < 2) {
+                         return App::CommandResult::Failure("missing_argument",
+                             "A key and a value are required.",
+                             "/settings set takes a setting name and its new value.",
+                             "List available settings with /settings list.");
+                     }
+                     if (!App::Settings::IsKnown(a[0])) {
+                         App::ErrorDetail e;
+                         e.code = "unknown_setting";
+                         e.message = "'" + a[0] + "' is not a known setting.";
+                         e.reason = "Unknown keys are rejected so a typo cannot become a dead setting.";
+                         e.remediation = "List available settings with /settings list.";
+                         for (const auto& known : App::Settings::Instance().Describe()) {
+                             e.availableInstead.push_back(known.key);
+                         }
+                         return App::CommandResult::Failure(e);
+                     }
+                     App::Settings::Instance().SetString(a[0], a[1]);
+                     std::string error;
+                     if (!App::Settings::Instance().Save(error)) {
+                         return App::CommandResult::Failure("settings_save_failed",
+                             "Could not save settings.", error);
+                     }
+                     return App::CommandResult::Success(a[0] + " = " + a[1]);
+                 }},
+            },
+            .defaultSubcommand = "list",
+            .argCompletions = {"list", "set"},
+        });
+
+        // --- Artifacts ----------------------------------------------------
+        Register({
+            .name = "artifacts",
+            .aliases = {"art"},
+            .description = "List generated project artifacts",
+            .usage = "/artifacts",
+            .category = "Project",
+            .detailedHelp = "Every large report Dracula generates is stored inside the project and "
+                            "listed here with its project-relative path.",
+            .examples = {"/artifacts"},
+            .requirement = CommandRequirement::ActiveProject,
+            .subcommands = {
+                {"list", "List project artifacts", "/artifacts list",
+                 {}, CommandRequirement::ActiveProject, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) {
+                     auto project = App::ProjectManager::Instance().Active();
+                     if (!project) {
+                         return App::CommandResult::Failure(App::NoActiveProjectError());
+                     }
+                     const auto& artifacts = project->Artifacts();
+                     if (artifacts.empty()) {
+                         auto r = App::CommandResult::Success("No artifacts generated yet.");
+                         r.Line("Commands that produce large tables write one automatically.");
+                         return r;
+                     }
+                     auto r = App::CommandResult::Success(
+                         std::to_string(artifacts.size()) + " artifact" +
+                         (artifacts.size() == 1 ? "" : "s") + ".");
+                     for (const auto& a : artifacts) {
+                         r.Line(a.createdAt + "  " + a.kind + "  " + a.relativePath +
+                                "  (" + App::FormatBytes(a.sizeBytes) + ")");
+                     }
+                     return r;
+                 }},
+            },
+            .defaultSubcommand = "list",
+            .argCompletions = {"list"},
         });
 
         // 0f. /dotnet
@@ -545,23 +1026,6 @@ namespace Dracula {
             .argCompletions = {"json", "md", "txt", "markdown"},
             .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
                 shell.HandleReport(args);
-            }
-        });
-
-        // 17. /session
-        Register({
-            .name = "session",
-            .aliases = {},
-            .description = "Display active session status, sample, and findings count",
-            .usage = "/session",
-            .category = "Session",
-            .detailedHelp = "Shows the active binary path, architecture, threat score, SHA-256 hash, and session state.",
-            .examples = {"/session"},
-            .takesFilePath = false,
-            .requiresArgs = false,
-            .argCompletions = {},
-            .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
-                shell.HandleSession(args);
             }
         });
 

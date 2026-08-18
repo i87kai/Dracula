@@ -95,6 +95,13 @@ set(DRACULA_CORE_SOURCES
     src/app/json.cpp
     src/app/project.cpp
     src/app/project_manager.cpp
+    src/app/settings.cpp
+    src/app/html_report.cpp
+    src/app/target_binding.cpp
+    src/app/project_service.cpp
+    src/app/memory_service.cpp
+    src/app/analysis_services.cpp
+    src/app/runtime_service.cpp
     src/utr/evidence_graph.cpp
     src/utr/memory_intelligence.cpp
     src/utr/function_intelligence.cpp
@@ -311,6 +318,11 @@ if(BUILD_TESTS)
     add_executable(test_project_workspace tests/test_project_workspace.cpp)
     target_link_libraries(test_project_workspace PRIVATE DraculaCore)
     add_test(NAME ProjectWorkspace COMMAND test_project_workspace)
+
+    # 10c. Command Registry Consistency Suite (palette == handlers)
+    add_executable(test_command_registry tests/test_command_registry.cpp)
+    target_link_libraries(test_command_registry PRIVATE DraculaCore)
+    add_test(NAME CommandRegistry COMMAND test_command_registry)
 
     # 11. ManagedHost .NET 10 Out-of-Process Backend Suite
     add_executable(test_managed_backend tests/test_managed_backend.cpp)

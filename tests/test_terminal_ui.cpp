@@ -397,8 +397,18 @@ static void TestPaletteStateMachine() {
 
     editor.ResetBuffer();
     editor.InsertString("/st");
-    Check(editor.GetSuggestions().size() == 1 && editor.GetSuggestions()[0].value == "strings",
-          "'/st' narrows to /strings");
+    {
+        // v1.3.0 introduced /static, so "/st" now legitimately matches
+        // both /static and /strings. The filter must offer exactly those.
+        const auto& stSuggestions = editor.GetSuggestions();
+        bool hasStatic = false, hasStringsCmd = false;
+        for (const auto& sg : stSuggestions) {
+            if (sg.value == "static") hasStatic = true;
+            if (sg.value == "strings") hasStringsCmd = true;
+        }
+        Check(stSuggestions.size() == 2 && hasStatic && hasStringsCmd,
+              "'/st' narrows to /static and /strings");
+    }
 
     editor.ResetBuffer();
     editor.InsertString("/str");
