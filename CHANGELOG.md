@@ -16,6 +16,7 @@ remains available in [`CHANGELOG.txt`](CHANGELOG.txt).
   release packages.
 - Reduced the Windows package to one canonical `bin/drac.exe` and audited its
   public contents.
+- Removed developer source paths from native and managed release binaries.
 
 ### Fixed
 

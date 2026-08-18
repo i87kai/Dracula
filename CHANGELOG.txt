@@ -8,6 +8,7 @@ Changed
 - Rewrote the public README and detailed documentation for the durable project workflow, local-first installation, architecture, sandboxing, MCP, and contribution boundaries.
 - Pinned Capstone and Unicorn as reproducible submodules, built Unicorn from source, and included the .NET 10 ManagedHost in normal builds and packages.
 - Reduced the release archive to one canonical bin\drac.exe and audited the shipped dependency notices.
+- Removed developer source paths from native and managed release binaries.
 
 Fixed
 -----

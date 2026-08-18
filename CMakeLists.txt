@@ -33,7 +33,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(MSVC)
     add_compile_options(/utf-8)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-finput-charset=UTF-8 -fexec-charset=UTF-8)
+    add_compile_options(
+        -finput-charset=UTF-8
+        -fexec-charset=UTF-8
+        "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=."
+        "-fdebug-prefix-map=${CMAKE_SOURCE_DIR}=.")
 endif()
 
 # Build options
@@ -256,6 +260,10 @@ if(DOTNET_EXECUTABLE)
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/managed/Dracula.ManagedHost/Dracula.ManagedHost.csproj
                 --configuration Release
                 --output ${CMAKE_CURRENT_BINARY_DIR}
+                -p:ContinuousIntegrationBuild=true
+                -p:DebugType=None
+                -p:DebugSymbols=false
+                "-p:PathMap=${CMAKE_SOURCE_DIR}=."
         BYPRODUCTS
             ${CMAKE_CURRENT_BINARY_DIR}/Dracula.ManagedHost.exe
             ${CMAKE_CURRENT_BINARY_DIR}/Dracula.ManagedHost.dll
