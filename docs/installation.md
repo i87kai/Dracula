@@ -131,9 +131,15 @@ real user workspace.
 
 ## PowerShell policy alternative
 
-If local policy blocks script files, use an allowed signed/policy-controlled
-PowerShell host or the explicit process-scoped alternative approved by your
-organization:
+If local policy blocks the extracted installer during the web bootstrap, use
+an allowed signed/policy-controlled PowerShell host or the explicit
+process-scoped alternative approved by your organization:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/i87kxxz/Dracula/main/scripts/bootstrap.ps1 | iex"
+```
+
+For an already extracted release:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
