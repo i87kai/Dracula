@@ -35,6 +35,36 @@ namespace Paths {
     // User data directory: %LOCALAPPDATA%\Dracula (or ~/.local/share/dracula on POSIX).
     std::string AppDataDir();
 
+    // ─── Dracula Install Root ──────────────────────────────────────────────
+    // The root of a Dracula installation, owning the layout described in the
+    // v1.3.0 workspace milestone:
+    //
+    //   <root>\bin  tools  brain  runtime  vm{base,overlays,cache}
+    //          projects  cache  logs  config
+    //
+    // Resolution order: SetInstallRoot() override, then the DRACULA_ROOT
+    // environment variable, then the install marker written by the bootstrap
+    // installer next to the executable, then AppDataDir() as the portable
+    // fallback. Never throws; always returns a usable directory.
+    std::string InstallRoot();
+
+    // Override the install root (bootstrap installer, tests, portable mode).
+    void SetInstallRoot(const std::string& path);
+
+    // Subdirectories of InstallRoot(). Each is created on first access.
+    std::string ProjectsDir();     // <root>\projects  - durable project workspaces
+    std::string BrainDir();        // <root>\brain     - reserved for future intelligence assets
+    std::string RuntimeDir();      // <root>\runtime
+    std::string ToolsDir();        // <root>\tools
+    std::string BinDir();          // <root>\bin
+    std::string ConfigDir();       // <root>\config
+    std::string LogsDir();         // <root>\logs
+    std::string CacheDir();        // <root>\cache
+    std::string VmDir();           // <root>\vm
+    std::string VmBaseDir();       // <root>\vm\base      - immutable .draculaimg bases
+    std::string VmOverlaysDir();   // <root>\vm\overlays  - disposable per-run overlays
+    std::string VmCacheDir();      // <root>\vm\cache
+
     // Directory for persistent session databases: %LOCALAPPDATA%\Dracula\sessions
     std::string SessionsDir();
 

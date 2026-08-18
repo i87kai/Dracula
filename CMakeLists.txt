@@ -92,6 +92,9 @@ set(DRACULA_CORE_SOURCES
     src/core/anti_evasion_engine.cpp
     src/core/anti_evasion_report.cpp
     src/core/c_api.cpp
+    src/app/json.cpp
+    src/app/project.cpp
+    src/app/project_manager.cpp
     src/utr/evidence_graph.cpp
     src/utr/memory_intelligence.cpp
     src/utr/function_intelligence.cpp
@@ -303,6 +306,11 @@ if(BUILD_TESTS)
     add_executable(test_session_persistence tests/test_session_persistence.cpp)
     target_link_libraries(test_session_persistence PRIVATE DraculaCore)
     add_test(NAME SessionPersistence COMMAND test_session_persistence)
+
+    # 10b. Project Workspace Suite (v1.3.0 project-centric architecture)
+    add_executable(test_project_workspace tests/test_project_workspace.cpp)
+    target_link_libraries(test_project_workspace PRIVATE DraculaCore)
+    add_test(NAME ProjectWorkspace COMMAND test_project_workspace)
 
     # 11. ManagedHost .NET 10 Out-of-Process Backend Suite
     add_executable(test_managed_backend tests/test_managed_backend.cpp)
