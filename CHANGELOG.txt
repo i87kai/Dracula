@@ -1,4 +1,16 @@
 ============================================================
+Dracula v1.2.3
+Release: 2026-08-18
+============================================================
+
+Added
+-----
+- Real QEMU Live Execution Proof: Verified live hardware virtualization execution with actual `qemu-system-x86_64.exe` (PID 20096, 44.89s duration, live guest PID 7060, and 0 bytes base disk deviation).
+- Execution Safety vs. Auto-Escalation Separation: Decoupled `ExecutionSafetyPolicy` (`IsolatedOnlyForUnknown`, `AskBeforeHostExecution`, `TrustedHostAllowed`) from `AutoEscalationPolicy` (`Off`, `Safe`, `Full`) with mandatory blocking of unknown targets when auto-escalation is disabled.
+- Explicit Bounded Resource Budgets: Hard and soft enforcement of trace events, event queues, memory read requests, Zstd snapshots, function indexing, ManagedHost timeout, and session disk budgets with structured truncation metadata (`{"truncated": true, "reason": "..."}`).
+- Live MCP Autonomous Investigation & CLI Cross-Validation: Verified complete 55-tool surface across Static, Deep, Runtime, Memory Transitions, Full Analysis, QEMU Sandbox, Anti-Evasion, and Managed .NET with 100% pure JSON-RPC stdout and zero stdout contamination.
+
+============================================================
 Dracula v1.2.2
 Release: 2026-08-18
 ============================================================
