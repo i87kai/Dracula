@@ -1,12 +1,11 @@
 # ─── Artwork embedding ──────────────────────────────────────────────────────
 #
-# "Vampire Dracula ASCII Art.txt" in the project root is the single editable
-# source of truth for the Dracula terminal artwork. This step reads that file at
-# configure time and generates a C++ header holding its bytes as explicit \xNN
-# escapes, which is then compiled into the executable.
+# assets/terminal/dracula_art.txt is the single editable source of truth for
+# the Dracula terminal artwork. This step reads that file at configure time and
+# generates a C++ header holding its bytes as explicit \xNN escapes, which is
+# then compiled into the executable.
 #
 # Two properties matter here:
-#
 #   * A released Dracula.exe has NO runtime dependency on the .txt file or on
 #     any absolute path - the artwork lives in the binary.
 #   * The bytes survive the build pipeline exactly. Escaping every byte means no
@@ -32,27 +31,29 @@ function(dracula_embed_art ART_INPUT ART_OUTPUT)
     set(ART_CURRENT "")       # row under construction
     set(ART_ROW_COUNT 0)
 
-    math(EXPR ART_LAST "${ART_BYTE_COUNT} - 1")
-    foreach(INDEX RANGE 0 ${ART_LAST})
-        math(EXPR OFFSET "${INDEX} * 2")
-        string(SUBSTRING "${ART_HEX}" ${OFFSET} 2 BYTE)
+    if(ART_BYTE_COUNT GREATER 0)
+        math(EXPR ART_LAST "${ART_BYTE_COUNT} - 1")
+        foreach(INDEX RANGE 0 ${ART_LAST})
+            math(EXPR OFFSET "${INDEX} * 2")
+            string(SUBSTRING "${ART_HEX}" ${OFFSET} 2 BYTE)
 
-        if(BYTE STREQUAL "0a")
-            # End of row. A CR was already dropped below, so nothing to strip.
+            if(BYTE STREQUAL "0a")
+                # End of row. A CR was already dropped below, so nothing to strip.
+                list(APPEND ART_ROWS "${ART_CURRENT}")
+                math(EXPR ART_ROW_COUNT "${ART_ROW_COUNT} + 1")
+                set(ART_CURRENT "")
+            elseif(BYTE STREQUAL "0d")
+                # CRLF and CR line endings both terminate on the following byte.
+            else()
+                string(APPEND ART_CURRENT "\\x${BYTE}")
+            endif()
+        endforeach()
+
+        # A final row without a trailing newline is still a row.
+        if(NOT ART_CURRENT STREQUAL "")
             list(APPEND ART_ROWS "${ART_CURRENT}")
             math(EXPR ART_ROW_COUNT "${ART_ROW_COUNT} + 1")
-            set(ART_CURRENT "")
-        elseif(BYTE STREQUAL "0d")
-            # CRLF and CR line endings both terminate on the following byte.
-        else()
-            string(APPEND ART_CURRENT "\\x${BYTE}")
         endif()
-    endforeach()
-
-    # A final row without a trailing newline is still a row.
-    if(NOT ART_CURRENT STREQUAL "")
-        list(APPEND ART_ROWS "${ART_CURRENT}")
-        math(EXPR ART_ROW_COUNT "${ART_ROW_COUNT} + 1")
     endif()
 
     if(ART_ROW_COUNT EQUAL 0)

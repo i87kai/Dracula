@@ -2193,6 +2193,8 @@ namespace Dracula {
         else if (first == "--findings") command = "findings";
         else if (first == "--report") command = "report";
         else if (first == "--session") command = "session";
+        else if (first == "--update") command = "update";
+        else if (first == "--about") command = "about";
         else {
             command = "analyze";
             cmdArgs.push_back(first);

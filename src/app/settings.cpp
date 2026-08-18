@@ -27,6 +27,9 @@ namespace App {
         {"palette.enabled",       "true",  "Show the hierarchical command palette while typing."},
         {"tips.enabled",          "true",  "Show contextual tips in the header."},
         {"sandbox.auto_cleanup",  "true",  "Delete temporary VM overlays after every run."},
+        {"update.auto_check",     "true",  "Check for updates automatically when Dracula starts."},
+        {"update.channel",        "stable","Release channel to track: stable or prerelease."},
+        {"update.auto_install",   "false", "Automatically download and install updates without prompting."},
     };
 
     Settings& Settings::Instance() {

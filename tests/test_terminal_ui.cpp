@@ -187,9 +187,10 @@ static void TestColumns() {
 // the embedded copy ever drifts from the project file.
 static std::vector<std::string> ReadArtworkAsset() {
     std::vector<std::string> rows;
-    const std::string name = "Vampire Dracula ASCII Art.txt";
-
-    std::string path = Paths::ResolveResource(name);
+    std::string path = Paths::ResolveResource("assets/terminal/dracula_art.txt");
+    if (path.empty()) {
+        path = Paths::ResolveResource("dracula_art.txt");
+    }
     if (path.empty()) return rows;
 
     std::ifstream file(path, std::ios::binary);
@@ -290,7 +291,7 @@ static void TestHeaderGeometry() {
     Section("Layout 7: header geometry at every tested width");
 
     StartupInfo info = StartupInfo::Detect();
-    info.workingDirectory = "D:\\Coding\\python\\AI\\jew\\build\\some\\deeply\\nested\\path";
+    info.workingDirectory = "C:\\Projects\\Dracula\\workspace\\some\\deeply\\nested\\path";
 
     bool nothingOverflows = true;
     bool noEmbeddedNewlines = true;

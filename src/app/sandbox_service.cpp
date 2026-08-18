@@ -381,7 +381,7 @@ namespace App {
             return CommandResult::Failure("missing_argument",
                                           "No source image specified.",
                                           "/sandbox image import needs a path to your VM disk image.",
-                                          "Example: /sandbox image import D:\\VirtualMachines\\win10.vdi");
+                                          "Example: /sandbox image import C:\\VMs\\win10.vdi");
         }
 
         std::error_code ec;

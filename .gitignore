@@ -1,9 +1,13 @@
-# Build directories and artifacts
+# ─── Build directories and compilation artifacts ───────────────────────────
 build/
 build_*/
 bin/
 obj/
 out/
+generated/
+dist/
+release/
+packaging/release/
 *.o
 *.obj
 *.a
@@ -14,37 +18,46 @@ out/
 *.pdb
 *.ilk
 
-# Generated reports & logs
+# ─── .NET / Managed intermediates ───────────────────────────────────────────
+**/bin/
+**/obj/
+*.nuget.props
+*.nuget.targets
+project.assets.json
+project.nuget.cache
+
+# ─── Generated reports, dumps & logs ─────────────────────────────────────────
 sandbox_report.txt
 *.log
 *.tmp
+*.sha256
 
-# IDE & Editor files
+# ─── IDE & Editor artifacts ───────────────────────────────────────────────────
 .vscode/
 .vs/
 .idea/
+.claude/
 *.user
+*.suo
 imgui.ini
 
-# Windows system artifacts
+# ─── Windows system artifacts ────────────────────────────────────────────────
 Thumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+$recycle.bin/
 System Volume Information/
 
-# Compressed archives
+# ─── Compressed archives ────────────────────────────────────────────────────
 *.zip
 *.tar.gz
 *.7z
 
-# ─── Dracula workspace artifacts (v1.3.0) ───────────────────────────────────
-# None of this belongs in the repository: it is either the user's own data,
-# machine-specific, or regenerable.
-
-# VM disk images and packages. The user supplies their own Windows image and
-# Dracula packages it locally; neither the image nor the package is ever
-# distributed (milestone section 29).
+# ─── Dracula workspace & runtime artifacts ───────────────────────────────────
+# VM disk images and packages (never distributed or committed)
 *.draculaimg
+*.draculaimg.partial
+*.partial
 *.vdi
 *.qcow2
 *.vmdk
@@ -62,14 +75,12 @@ brain/
 .dracula_root
 
 # Per-project generated output
-*.draculaimg.partial
-*.partial
 memory/snapshots/
 memory/dumps/
 memory/maps/
 events.jsonl
 
-# Generated reports and indexes
+# Generated reports and runtime state
 config/projects.json
 config/settings.json
 reports/*.html
@@ -78,3 +89,5 @@ artifacts/
 # Local test installations
 /DraculaLive/
 /DraculaInstallTest/
+/DraculaReleaseTest/
+/test_install*/

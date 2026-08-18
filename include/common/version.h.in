@@ -19,6 +19,8 @@
 #define DRACULA_PLATFORM_NAME "Dracula Unified Binary Intelligence Platform"
 #define DRACULA_RELEASE_DATE "@DRACULA_RELEASE_DATE@"
 #define DRACULA_BUILD_TARGET "@DRACULA_BUILD_TARGET@"
+#define DRACULA_GITHUB_REPO "@DRACULA_GITHUB_REPO@"
+#define DRACULA_GITHUB_URL "@DRACULA_GITHUB_URL@"
 
 namespace Dracula {
     namespace Version {
@@ -29,6 +31,8 @@ namespace Dracula {
         inline constexpr const char* PlatformName = DRACULA_PLATFORM_NAME;
         inline constexpr const char* ReleaseDate = DRACULA_RELEASE_DATE;
         inline constexpr const char* BuildTarget = DRACULA_BUILD_TARGET;
+        inline constexpr const char* GitHubRepo = DRACULA_GITHUB_REPO;
+        inline constexpr const char* GitHubUrl = DRACULA_GITHUB_URL;
 
         inline std::string GetFullVersionString() {
             return std::string("Dracula v") + String + " (" + BuildTarget + ")";

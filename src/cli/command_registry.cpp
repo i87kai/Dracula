@@ -3,6 +3,8 @@
 #include "app/services.h"
 #include "app/settings.h"
 #include "app/sandbox_service.h"
+#include "app/update_service.h"
+#include "common/version.h"
 
 #include <algorithm>
 #include <cctype>
@@ -861,7 +863,7 @@ namespace Dracula {
                             "disposable overlay that is deleted afterwards, on success and on "
                             "failure alike, so the base is never contaminated. QEMU stays stopped "
                             "until an analysis genuinely needs it.",
-            .examples = {"/sandbox status", "/sandbox image import D:\\VirtualMachines\\win10.vdi",
+            .examples = {"/sandbox status", "/sandbox image import C:\\VMs\\win10.vdi",
                          "/sandbox image verify", "/sandbox image restore", "/sandbox reset"},
             .requirement = CommandRequirement::None,
             .subcommands = {
@@ -1163,6 +1165,110 @@ namespace Dracula {
             }
         });
 
+        // 20b. /update
+        Register({
+            .name = "update",
+            .aliases = {"upgrade"},
+            .description = "Check for and install Dracula software updates",
+            .usage = "/update [check|status|install]",
+            .category = "System",
+            .detailedHelp = "Connects to official GitHub Releases API to verify, download, and install latest verified Dracula releases with SHA-256 integrity verification.",
+            .examples = {"/update check", "/update status", "/update install"},
+            .takesFilePath = false,
+            .requiresArgs = false,
+            .subcommands = {
+                {"check", "Check GitHub for newer releases", "/update check",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) {
+                     auto& updater = App::UpdateService::Instance();
+                     std::string error;
+                     if (!updater.CheckDefault(error)) {
+                         return App::CommandResult::Failure("update_check_failed",
+                             "Could not check for updates.", error);
+                     }
+                     if (updater.IsUpdateAvailable()) {
+                         const auto& info = updater.GetLastInfo();
+                         auto r = App::CommandResult::Success("A new version of Dracula is available!");
+                         r.Line("Current version: v" DRACULA_VERSION_STRING);
+                         r.Line("Latest version:  " + info.tag);
+                         if (!info.body.empty()) {
+                             r.Line("Release notes:   " + info.body.substr(0, std::min(info.body.size(), size_t(120))) + "...");
+                         }
+                         r.Line("Run '/update install' to download and install now.");
+                         return r;
+                     }
+                     return App::CommandResult::Success("Dracula is up to date (v" DRACULA_VERSION_STRING ").");
+                 }},
+
+                {"status", "Show update status and configured release channel", "/update status",
+                 {}, CommandRequirement::None, CommandSafety::Safe,
+                 [](const std::vector<std::string>&) {
+                     auto& updater = App::UpdateService::Instance();
+                     std::string channel = App::Settings::Instance().GetString("update.channel", "stable");
+                     bool autoCheck = App::Settings::Instance().GetBool("update.auto_check", true);
+                     auto r = App::CommandResult::Success("Dracula Update Status");
+                     r.Line("Installed version: v" DRACULA_VERSION_STRING);
+                     r.Line("Release channel:   " + channel);
+                     r.Line("Automatic checks:  " + std::string(autoCheck ? "enabled" : "disabled"));
+                     r.Line("Status:            " + updater.StatusLine());
+                     return r;
+                 }},
+
+                {"install", "Download, verify SHA-256, and install the latest release", "/update install",
+                 {}, CommandRequirement::None, CommandSafety::Mutating,
+                 [](const std::vector<std::string>&) {
+                     auto& updater = App::UpdateService::Instance();
+                     std::string error;
+                     if (updater.GetStatus() == App::UpdateStatus::Unknown) {
+                         if (!updater.CheckDefault(error)) {
+                             return App::CommandResult::Failure("update_check_failed",
+                                 "Update check failed before install.", error);
+                         }
+                     }
+                     if (!updater.IsUpdateAvailable()) {
+                         return App::CommandResult::Success("No update needed. Dracula is already up to date (v" DRACULA_VERSION_STRING ").");
+                     }
+                     const auto& info = updater.GetLastInfo();
+                     if (!updater.Install(info, nullptr, error)) {
+                         return App::CommandResult::Failure("update_install_failed",
+                             "Failed to install update.", error);
+                     }
+                     auto r = App::CommandResult::Success("Update to " + info.tag + " installed successfully!");
+                     r.Line("Backup of previous binaries saved in <InstallRoot>\\backup.");
+                     r.Line("Please restart Dracula to run the updated version.");
+                     return r;
+                 }}
+            },
+            .defaultSubcommand = "status",
+            .argCompletions = {"check", "status", "install"}
+        });
+
+        // 20c. /about
+        Register({
+            .name = "about",
+            .aliases = {"info", "manifesto"},
+            .description = "Show Dracula architecture, manifesto, and repository info",
+            .usage = "/about",
+            .category = "System",
+            .detailedHelp = "Displays the Dracula project manifesto ('ONE PROJECT, ONE TARGET CONTEXT, ONE EVIDENCE MODEL'), open-source license, and repository coordinates.",
+            .examples = {"/about"},
+            .takesFilePath = false,
+            .requiresArgs = false,
+            .handler = [](DraculaShell&, const std::vector<std::string>&) {
+                std::cout << "\n  \x1b[38;2;189;147;249mDRACULA\x1b[0m \x1b[38;2;255;121;198mv" DRACULA_VERSION_STRING "\x1b[0m"
+                          << " — Dynamic Reversing & Automated Code Understanding Architecture\n"
+                          << "  \x1b[38;2;98;114;164m" << std::string(72, '-') << "\x1b[0m\n\n"
+                          << "  \x1b[1mCore Manifesto:\x1b[0m\n"
+                          << "    \x1b[38;2;139;233;253m1. ONE PROJECT\x1b[0m         Durable workspace storage preserving sessions, snapshots, and artifacts.\n"
+                          << "    \x1b[38;2;139;233;253m2. ONE TARGET CONTEXT\x1b[0m  Unified model across PE files, live PIDs, .NET assemblies, drivers, and DLLs.\n"
+                          << "    \x1b[38;2;139;233;253m3. ONE EVIDENCE MODEL\x1b[0m  Every fact tagged with rigorous provenance (Calculated, Resolved, Live-Read).\n\n"
+                          << "  \x1b[1mOpen Source & Repository:\x1b[0m\n"
+                          << "    License:    GNU General Public License v3.0 (GPL-3.0-only)\n"
+                          << "    Repository: " DRACULA_GITHUB_URL ".git\n"
+                          << "    Authors:    Dracula Reverse Engineering Community\n\n";
+            }
+        });
+
         // 21. /clear
         Register({
             .name = "clear",
@@ -1191,7 +1297,7 @@ namespace Dracula {
             .examples = {"/help", "/help analyze", "/help emulate"},
             .takesFilePath = false,
             .requiresArgs = false,
-            .argCompletions = {"analyze", "disasm", "headers", "security", "imports", "exports", "strings", "entropy", "emulate", "sandbox", "antievasion", "scan", "functions", "cfg", "xrefs", "findings", "report", "session", "mcp", "changelog", "version", "clear", "help", "exit"},
+            .argCompletions = {"analyze", "disasm", "headers", "security", "imports", "exports", "strings", "entropy", "emulate", "sandbox", "antievasion", "scan", "functions", "cfg", "xrefs", "findings", "report", "session", "mcp", "changelog", "version", "update", "about", "clear", "help", "exit"},
             .handler = [](DraculaShell& shell, const std::vector<std::string>& args) {
                 shell.HandleHelp(args);
             }

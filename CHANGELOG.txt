@@ -1,4 +1,17 @@
 ============================================================
+Dracula v1.3.1
+Release: 2026-08-18
+============================================================
+
+Added
+-----
+- Auto-Update Subsystem: In-place software update engine (`UpdateService`) querying GitHub Releases API with WinINet and native Json/Hasher, supporting SHA-256 verification, automatic backup, and rollback.
+- Interactive Update Commands: Added `/update` (`check`, `status`, `install`) and CLI flag `--update` for managing updates directly from the Dracula terminal.
+- Project Manifesto & Info: Added `/about` command displaying Dracula's core philosophy ("ONE PROJECT, ONE TARGET CONTEXT, ONE EVIDENCE MODEL") and repository metadata.
+- Open Source Release Infrastructure: Standardized installation (`scripts/install.ps1`), bootstrap installer (`scripts/bootstrap.ps1`), updater (`scripts/update.ps1`), uninstaller (`scripts/uninstall.ps1`), and release packager (`packaging/package_release.ps1`).
+- Asset Reorganization: Centralized terminal artwork to `assets/terminal/dracula_art.txt` with robust compile-time embedding.
+
+============================================================
 Dracula v1.3.0
 Release: 2026-08-18
 ============================================================

@@ -3,10 +3,12 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.3.0 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.3.1 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-18")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
+set(DRACULA_GITHUB_REPO "i87kxxz/Dracula")
+set(DRACULA_GITHUB_URL "https://github.com/i87kxxz/Dracula")
 
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/common/version.h.in
@@ -19,7 +21,7 @@ configure_file(
 # build time, so a released binary never reads it from disk.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedArt.cmake)
 dracula_embed_art(
-    "${CMAKE_CURRENT_SOURCE_DIR}/Vampire Dracula ASCII Art.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/terminal/dracula_art.txt"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/cli/dracula_art_data.h"
 )
 
@@ -105,6 +107,7 @@ set(DRACULA_CORE_SOURCES
     src/app/hasher.cpp
     src/app/dracula_image.cpp
     src/app/sandbox_service.cpp
+    src/app/update_service.cpp
     src/utr/evidence_graph.cpp
     src/utr/memory_intelligence.cpp
     src/utr/function_intelligence.cpp
@@ -159,7 +162,7 @@ target_link_libraries(DraculaCore PUBLIC
 )
 
 if(WIN32)
-    target_link_libraries(DraculaCore PUBLIC ws2_32 iphlpapi psapi crypt32 bcrypt dbghelp ole32 oleaut32)
+    target_link_libraries(DraculaCore PUBLIC ws2_32 iphlpapi psapi crypt32 bcrypt dbghelp ole32 oleaut32 wininet)
 endif()
 
 if(MINGW OR MSYS)
