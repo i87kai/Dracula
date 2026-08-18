@@ -148,6 +148,10 @@ try {
     }
     Assert-True $serverReady 'local release fixture is ready before updater download'
     $child = Invoke-ChildPowerShell @('-File', $updateScript, '-InstallRoot', $installRoot, '-ReleaseMetadataPath', (Join-Path $httpRoot 'releases.json'), '-NoRestart', '-Quiet')
+    if ($child.ExitCode -eq 0 -or $child.Output -notmatch 'SHA-256 verification failed') {
+        Write-Host "  Updater child exit code: $($child.ExitCode)"
+        Write-Host "  Updater child output: $($child.Output)"
+    }
     Assert-True ($child.ExitCode -ne 0 -and $child.Output -match 'SHA-256 verification failed') 'updater rejects a downloaded package with the wrong SHA-256'
     $version = (& (Join-Path $installRoot 'bin\drac.exe') --version 2>&1 | Out-String)
     Assert-True ($LASTEXITCODE -eq 0 -and $version -match ('v' + [regex]::Escape($ExpectedVersion))) 'wrong-checksum rejection leaves the active executable working'
