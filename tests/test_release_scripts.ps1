@@ -79,7 +79,7 @@ try {
     Write-Host 'Release scripts: wrong-checksum rejection'
     $httpRoot = Join-Path $testRoot 'http'
     [void](New-Item -ItemType Directory -Path $httpRoot -Force)
-    $remoteZipName = 'Dracula-v1.3.3-windows-x64.zip'
+    $remoteZipName = 'Dracula-v1.3.4-windows-x64.zip'
     Set-Content -LiteralPath (Join-Path $httpRoot $remoteZipName) -Value 'not a trusted release archive' -NoNewline
     Set-Content -LiteralPath (Join-Path $httpRoot ($remoteZipName + '.sha256')) -Value (('0' * 64) + '  ' + $remoteZipName) -NoNewline
     $portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -89,7 +89,7 @@ try {
     $baseUrl = "http://127.0.0.1:$port"
     @(
         [PSCustomObject]@{
-            tag_name = 'v1.3.3'; draft = $false; prerelease = $false;
+            tag_name = 'v1.3.4'; draft = $false; prerelease = $false;
             assets = @(
                 [PSCustomObject]@{ name = $remoteZipName; browser_download_url = "$baseUrl/$remoteZipName" },
                 [PSCustomObject]@{ name = $remoteZipName + '.sha256'; browser_download_url = "$baseUrl/$remoteZipName.sha256" }

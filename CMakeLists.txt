@@ -336,6 +336,11 @@ add_custom_target(AntiEvasionSamples ALL DEPENDS ${DRACULA_AE_SAMPLE_OUTPUTS})
 if(BUILD_TESTS)
     enable_testing()
 
+    # Benign PE fixture consumed by the clean-build regression suites.
+    add_executable(test_sample samples/test_sample.cpp)
+    set_target_properties(test_sample PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/samples")
+
     # 1. Legacy buffer emulation test
     add_executable(test_emulate_buffer tests/test_emulate_buffer.cpp)
     target_link_libraries(test_emulate_buffer PRIVATE DraculaCore)
@@ -344,6 +349,7 @@ if(BUILD_TESTS)
     # 2. Comprehensive Dracula Intelligence Test Suite
     add_executable(test_dracula_suite tests/test_dracula_suite.cpp)
     target_link_libraries(test_dracula_suite PRIVATE DraculaCore)
+    add_dependencies(test_dracula_suite test_sample)
     add_test(NAME DraculaTestSuite COMMAND test_dracula_suite)
 
     # 3. Terminal layout / startup card / palette rendering suite
