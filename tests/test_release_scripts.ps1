@@ -25,7 +25,7 @@ function Assert-FileText {
 
 function Invoke-ChildPowerShell {
     param([string[]]$Arguments)
-    $hostExe = Join-Path $PSHOME 'powershell.exe'
+    $hostExe = (Get-Process -Id $PID).Path
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {

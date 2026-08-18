@@ -457,7 +457,8 @@ if(BUILD_TESTS)
     add_test(NAME QemuUtrE2E COMMAND test_qemu_utr_e2e)
 
     # 16. Release lifecycle scripts use only isolated synthetic workspaces.
-    find_program(DRACULA_POWERSHELL_EXECUTABLE NAMES powershell.exe powershell REQUIRED)
+    find_program(DRACULA_POWERSHELL_EXECUTABLE
+        NAMES pwsh.exe pwsh powershell.exe powershell REQUIRED)
     add_test(NAME ReleaseScripts
         COMMAND ${DRACULA_POWERSHELL_EXECUTABLE}
                 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass
