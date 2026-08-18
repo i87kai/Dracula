@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── SINGLE SOURCE OF TRUTH FOR THE DRACULA VERSION ─────────────────────────
 # include/common/version.h is GENERATED from this declaration. Never hard-code
 # a version anywhere else in the tree.
-project(Dracula VERSION 1.2.1 LANGUAGES C CXX RC)
+project(Dracula VERSION 1.2.2 LANGUAGES C CXX RC)
 
 set(DRACULA_RELEASE_DATE "2026-08-18")
 set(DRACULA_BUILD_TARGET "x86_64-w64-mingw32")
@@ -324,6 +324,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_dracula_agent PRIVATE DraculaCore)
     add_dependencies(test_dracula_agent DraculaAgent64)
     add_test(NAME DraculaAgent COMMAND test_dracula_agent)
+
+    # 15. Real QEMU UTR End-to-End & Escalation Suite
+    add_executable(test_qemu_utr_e2e tests/test_qemu_utr_e2e.cpp)
+    target_link_libraries(test_qemu_utr_e2e PRIVATE DraculaCore)
+    add_test(NAME QemuUtrE2E COMMAND test_qemu_utr_e2e)
 endif()
 
 message(STATUS "")

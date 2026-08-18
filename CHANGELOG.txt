@@ -1,4 +1,15 @@
 ============================================================
+Dracula v1.2.2
+Release: 2026-08-18
+============================================================
+
+Added
+-----
+- Complete 48-Tool MCP AI Autonomy Surface: Full JSON-RPC tool implementation with capability checks, structured unsupported reason feedback, pure stdout stream isolation, and zero ANSI contamination.
+- Real End-to-End QEMU UTR Verification: Proved full pipeline execution from VmTarget / QEMU backend launch, live telemetry ingest, process lineage preservation, EvidenceGraph node generation, SQLite persistence, and non-destructive cleanup (no leaked sockets or zombie processes).
+- Multi-Level Orchestration & Auto-Escalation: Fully integrated and verified Quick, Deep, Runtime, and Full analysis passes with explicit `Off`, `Safe`, and `Full` auto-escalation policies and bounded resource budget limits.
+
+============================================================
 Dracula v1.2.1
 Release: 2026-08-18
 ============================================================

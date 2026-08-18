@@ -82,13 +82,15 @@ namespace UTR {
                 result.target.name
             );
 
-            // If .NET target, enrich from ManagedHost
-            if (result.target.kind == TargetKind::ManagedExe || result.target.kind == TargetKind::ManagedDll) {
-                auto funcsRes = target->EnumerateFunctions();
-                if (funcsRes.Ok()) {
-                    for (const auto& fn : funcsRes.Value()) {
+            // Enumerate functions directly from target backend
+            auto funcsRes = target->EnumerateFunctions();
+            if (funcsRes.Ok()) {
+                for (const auto& fn : funcsRes.Value()) {
+                    if (!result.functionIntelligence.FindByRva(fn.rva) && !result.functionIntelligence.FindByName(fn.name)) {
                         result.functionIntelligence.AddFunction(fn);
+                    }
 
+                    if (result.target.kind == TargetKind::ManagedExe || result.target.kind == TargetKind::ManagedDll) {
                         EvidenceNode node;
                         node.id = "MGD_" + fn.name;
                         node.category = "ManagedIntelligence";
